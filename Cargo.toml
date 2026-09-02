@@ -1,0 +1,12 @@
+[package]
+name = "emailyzer"
+version = "0.1.0"
+edition = "2024"
+authors = ["Malhar Vora <mlvora.2010@gmail.com>"]
+description = "Analyze your email account"
+readme = "README.md"
+repository = "https://github.com/vbmade2000/emailyzer"
+license-file = "LICENSE"
+keywords = ["email, analyze, internet"]
+
+[dependencies]
