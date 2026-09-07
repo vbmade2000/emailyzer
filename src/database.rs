@@ -9,7 +9,8 @@ pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> 
     conn.execute(
         "CREATE TABLE emails 
         (
-            email_id TEXT PRIMAEY KEY,
+            uid INTEGER PRIMAEY KEY,
+            subject TEXT,
             sender TEXT NOT NULL,
             receiver TEXT NOT NULL,
             has_attachment bool NOT NULL,
