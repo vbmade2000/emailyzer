@@ -1,15 +1,17 @@
 use std::path::Path;
 
 use rusqlite::Connection;
+use tracing::{debug, info};
 
 use crate::types::Email;
 
 pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;
+    info!("Connection to the SQLite database successfully established");
 
     // Create required tables if required
     if !conn.table_exists(None, "emails")? {
-        println!("Couldn't find `emails` table, creating it");
+        info!("Couldn't find `emails` table, creating it");
         conn.execute(
             "CREATE TABLE emails 
         (
@@ -23,8 +25,9 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
         )",
             (),
         )?;
+        info!("Table `emails` created successfully");
     } else {
-        println!("`emails` table is already present.");
+        info!("`emails` table is already present.");
     }
     conn.is_autocommit();
     Ok(conn)
@@ -43,6 +46,10 @@ pub async fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Resu
             email.body
         ),
     )?;
+    debug!(
+        "Email with UID {} is saved successfully in database",
+        email.uid
+    );
 
     Ok(())
 }

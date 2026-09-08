@@ -20,6 +20,11 @@ $ cd emailyzer
 $ cargo build --release
 ```
 
+## Change the log level for application
+```
+$ RUST_LOG=debug ./emailyzer
+```
+
 ## Further reading
 [https://datatracker.ietf.org/doc/html/rfc3501](https://datatracker.ietf.org/doc/html/rfc3501)
 

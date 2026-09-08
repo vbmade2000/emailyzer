@@ -3,13 +3,14 @@ use std::net::TcpStream;
 use imap::{Client, Session, types::Fetch};
 use native_tls::{TlsConnector, TlsStream};
 use tokio_imap::types::{Address, Envelope};
+use tracing::info;
 
 /// Retrieves email credentials from env vars.
 /// You can set it in current shell or .bashrc as below.
 /// export GMAIL_USERNAME="your-gmail-username"
 /// export GMAIL_PWD="your-gmail-password"
 pub async fn get_credentials() -> anyhow::Result<(String, String)> {
-    println!("Retrieving credentials from env var");
+    info!("Retrieving credentials from env var");
     // IMP: Do NOT hardcode your Gmail password or App Password in source code.
     Ok((
         std::env::var("GMAIL_USERNAME")?,
@@ -19,7 +20,7 @@ pub async fn get_credentials() -> anyhow::Result<(String, String)> {
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
 pub async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
-    println!("Building TLS Connector to validate Gmail certificate");
+    info!("Building TLS Connector to validate Gmail certificate");
     Ok(TlsConnector::builder().build()?)
 }
 
@@ -27,7 +28,7 @@ pub async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
 /// 1. Create instance of TlsConnector
 /// 2. Create an imap client
 pub async fn get_client(domain: &str, port: u16) -> anyhow::Result<Client<TlsStream<TcpStream>>> {
-    println!("Creating a client");
+    info!("Creating a client");
     let tls = get_tls_connector().await?;
     Ok(imap::connect((domain, port), domain, &tls)?)
 }
@@ -38,9 +39,9 @@ pub async fn get_session(
     password: &str,
     client: Client<TlsStream<TcpStream>>,
 ) -> anyhow::Result<Session<TlsStream<TcpStream>>> {
-    println!("Creating a session for interaction");
+    info!("Creating a session for interaction");
     let session = client.login(username, password).map_err(|error| error.0)?;
-    println!("Authentication successful!");
+    info!("Authentication successful. Session established successfully");
     Ok(session)
 }
 
