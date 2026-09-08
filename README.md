@@ -19,3 +19,8 @@ $ git clone https://github.com/vbmade2000/emailyzer.git
 $ cd emailyzer
 $ cargo build --release
 ```
+
+## Further reading
+[https://datatracker.ietf.org/doc/html/rfc3501](https://datatracker.ietf.org/doc/html/rfc3501)
+
+Check section https://datatracker.ietf.org/doc/html/rfc3501#section-7.4.2
