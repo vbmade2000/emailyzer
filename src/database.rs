@@ -46,3 +46,10 @@ pub fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()>
 
     Ok(())
 }
+
+pub fn get_last_fetched_uid(conn: &Connection) -> anyhow::Result<u32> {
+    let last_uid: u32 = conn.query_row("SELECT COALESCE(MAX(uid), 0) FROM emails", [], |row| {
+        row.get(0)
+    })?;
+    Ok(last_uid)
+}

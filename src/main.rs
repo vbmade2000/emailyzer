@@ -1,5 +1,5 @@
 use crate::{
-    database::{create_email_entry, create_or_open_db},
+    database::{create_email_entry, create_or_open_db, get_last_fetched_uid},
     email::{
         get_client, get_credentials, get_datetime, get_receiver, get_sender, get_session,
         get_subject, is_seen,
@@ -23,24 +23,30 @@ fn main() -> anyhow::Result<()> {
     let client = get_client(domain, port)?;
     println!("Connected successfully.");
 
-    println!("Authenticating...");
+    let last_uid = get_last_fetched_uid(&conn)?;
 
+    println!("Authenticating...");
     let mut session = get_session(&username, &password, client)?;
 
     let mailbox = session.examine("INBOX")?;
 
-    println!("INBOX opened in read-only mode.");
-    println!("Messages: {}", mailbox.exists);
-    println!("Recent messages: {}", mailbox.recent);
-    println!("Next UID: {}", mailbox.uid_next.unwrap_or(0));
+    let uid_next = mailbox.uid_next.unwrap_or(0);
 
-    let messages = session
-        .fetch("1:*", "(UID FLAGS ENVELOPE)")
-        .expect("Failed to fetch message metadata");
+    println!("Messages in INBOX: {}", mailbox.exists);
+    println!("Next UID: {}", uid_next);
+    println!("Last UID in DB: {}", last_uid);
 
-    println!("\nMessages:");
+    // println!("INBOX opened in read-only mode.");
+    // println!("Messages: {}", mailbox.exists);
+    // println!("Recent messages: {}", mailbox.recent);
+    // println!("Next UID: {}", mailbox.uid_next.unwrap_or(0));
 
-    for message in messages.iter().rev().take(100) {
+    // let messages = session.uid_fetch(format!("{}:*", last_uid + 1), "(UID FLAGS ENVELOPE)")?;
+    let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
+
+    println!("Fetched: {} messages", messages.len());
+
+    for message in messages.iter() {
         // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
         let uid = message.uid.unwrap_or(0);
 

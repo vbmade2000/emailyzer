@@ -84,10 +84,7 @@ pub fn get_datetime(envelope: &Envelope) -> String {
 
 /// Extract is_seen flag from message
 pub fn is_seen(message: &Fetch) -> bool {
-    message
-        .flags()
-        .iter()
-        .any(|flag| *flag == imap::types::Flag::Seen)
+    message.flags().contains(&imap::types::Flag::Seen)
 }
 
 /// Format email address
