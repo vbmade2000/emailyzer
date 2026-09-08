@@ -1,92 +1,78 @@
-use tracing::info;
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand};
+use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
-use crate::{
-    database::{create_email_entry, create_or_open_db, get_last_fetched_uid},
-    email::{
-        get_client, get_credentials, get_datetime, get_receiver, get_sender, get_session,
-        get_subject, is_seen,
-    },
-    types::Email,
-};
+use crate::email::fetch_emails;
 
 mod database;
 mod email;
 mod types;
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "emailyzer",
+    version = "0.1.0",
+    author = "Malhar Vora <vbmade2000 at gmail dot com>",
+    about = "A fast email analysis tool"
+)]
+struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Fetch emails from the provider
+    Fetch(FetchArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct FetchArgs {
+    /// Path to the log file
+    #[arg(short, long)]
+    pub log_file: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    let commands = cli.command;
+    match commands {
+        Commands::Fetch(_fetchargs) => {
+            set_tracing().await?;
+            fetch_emails().await?;
+
+            // TODO: Handle log file arg
+            // if let Some(log_file) = fetchargs.log_file {
+            //     println!("Found log file: {:?}", log_file);
+            // }
+        }
+    }
+
+    Ok(())
+}
+
+async fn set_tracing() -> anyhow::Result<()> {
+    /*
+        This helps in setting log level from RUST_LOG env var. eg: export RUST_LOG=debug. If not set,
+        it will default to INFO.
+    */
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
     let subscriber = tracing_subscriber::fmt()
         .with_file(true)
         .with_line_number(true)
         .with_thread_ids(false)
         .with_target(true)
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .finish();
+
     tracing::subscriber::set_global_default(subscriber)?;
-
-    let conn = create_or_open_db("emailyzer.db").await?;
-
-    // Gmail IMAP server.
-    let domain = "imap.gmail.com";
-    let port = 993;
-
-    let (username, password) = get_credentials().await?;
-
-    let client = get_client(domain, port).await?;
-    info!("Connected successfully.");
-
-    let _last_uid = get_last_fetched_uid(&conn).await?;
-
-    info!("Authenticating...");
-    let mut session = get_session(&username, &password, client).await?;
-
-    let _mailbox = session.examine("INBOX")?;
-
-    // let uid_next = mailbox.uid_next.unwrap_or(0);
-
-    // println!("Messages in INBOX: {}", mailbox.exists);
-    // println!("Next UID: {}", uid_next);
-    // println!("Last UID in DB: {}", last_uid);
-
-    // println!("INBOX opened in read-only mode.");
-    // println!("Messages: {}", mailbox.exists);
-    // println!("Recent messages: {}", mailbox.recent);
-    // println!("Next UID: {}", mailbox.uid_next.unwrap_or(0));
-
-    // let messages = session.uid_fetch(format!("{}:*", last_uid + 1), "(UID FLAGS ENVELOPE)")?;
-    let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
-
-    info!("Fetching {} messages", messages.len());
-
-    for message in messages.iter().take(10) {
-        // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
-        let uid = message.uid.unwrap_or(0);
-
-        // Extract fields
-        let envelope = message.envelope().expect("Server did not return ENVELOPE");
-        let _is_seen = is_seen(message);
-        let subject = get_subject(envelope).await;
-        let sender = get_sender(envelope).await;
-        let receiver = get_receiver(envelope);
-        let datetime = get_datetime(envelope);
-
-        let email = Email {
-            uid,
-            subject,
-            sender,
-            receiver,
-            attachment: false,
-            timestamp: datetime,
-            body: "".to_string(),
-        };
-
-        create_email_entry(&conn, email).await?;
-    }
-
-    session.logout()?;
-
-    info!("Session disconnected successfully.");
-
+    info!("Tracing subscriber set successfully");
     Ok(())
 }

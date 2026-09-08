@@ -5,6 +5,11 @@ use native_tls::{TlsConnector, TlsStream};
 use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
+use crate::{
+    database::{create_email_entry, create_or_open_db, get_last_fetched_uid},
+    types::Email,
+};
+
 /// Retrieves email credentials from env vars.
 /// You can set it in current shell or .bashrc as below.
 /// export GMAIL_USERNAME="your-gmail-username"
@@ -101,4 +106,71 @@ fn format_address(address: &Address) -> String {
         .unwrap_or("<unknown>");
 
     format!("{mailbox}@{host}")
+}
+
+pub async fn fetch_emails() -> anyhow::Result<()> {
+    let conn = create_or_open_db("emailyzer.db").await?;
+
+    // Gmail IMAP server.
+    let domain = "imap.gmail.com";
+    let port = 993;
+
+    let (username, password) = get_credentials().await?;
+
+    let client = get_client(domain, port).await?;
+    info!("Connected successfully.");
+
+    let _last_uid = get_last_fetched_uid(&conn).await?;
+
+    info!("Authenticating...");
+    let mut session = get_session(&username, &password, client).await?;
+
+    let _mailbox = session.examine("INBOX")?;
+
+    // let uid_next = mailbox.uid_next.unwrap_or(0);
+
+    // println!("Messages in INBOX: {}", mailbox.exists);
+    // println!("Next UID: {}", uid_next);
+    // println!("Last UID in DB: {}", last_uid);
+
+    // println!("INBOX opened in read-only mode.");
+    // println!("Messages: {}", mailbox.exists);
+    // println!("Recent messages: {}", mailbox.recent);
+    // println!("Next UID: {}", mailbox.uid_next.unwrap_or(0));
+
+    // let messages = session.uid_fetch(format!("{}:*", last_uid + 1), "(UID FLAGS ENVELOPE)")?;
+    let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
+
+    info!("Fetching {} messages", messages.len());
+
+    for message in messages.iter().take(10) {
+        // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
+        let uid = message.uid.unwrap_or(0);
+
+        // Extract fields
+        let envelope = message.envelope().expect("Server did not return ENVELOPE");
+        let _is_seen = is_seen(message);
+        let subject = get_subject(envelope).await;
+        let sender = get_sender(envelope).await;
+        let receiver = get_receiver(envelope);
+        let datetime = get_datetime(envelope);
+
+        let email = Email {
+            uid,
+            subject,
+            sender,
+            receiver,
+            attachment: false,
+            timestamp: datetime,
+            body: "".to_string(),
+        };
+
+        create_email_entry(&conn, email).await?;
+    }
+
+    session.logout()?;
+
+    info!("Session disconnected successfully.");
+
+    Ok(())
 }
