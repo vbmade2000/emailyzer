@@ -2,6 +2,8 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
+use crate::types::Email;
+
 pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;
 
@@ -22,4 +24,21 @@ pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> 
 
     conn.is_autocommit();
     Ok(conn)
+}
+
+pub fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO emails (uid, subject, sender, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            email.uid,
+            email.subject,
+            email.sender,
+            email.receiver,
+            email.attachment,
+            email.timestamp,
+            email.body
+        ),
+    )?;
+
+    Ok(())
 }
