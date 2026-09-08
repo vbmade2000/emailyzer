@@ -11,22 +11,23 @@ mod database;
 mod email;
 mod types;
 
-fn main() -> anyhow::Result<()> {
-    let conn = create_or_open_db("emailyzer.db")?;
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let conn = create_or_open_db("emailyzer.db").await?;
 
     // Gmail IMAP server.
     let domain = "imap.gmail.com";
     let port = 993;
 
-    let (username, password) = get_credentials()?;
+    let (username, password) = get_credentials().await?;
 
-    let client = get_client(domain, port)?;
+    let client = get_client(domain, port).await?;
     println!("Connected successfully.");
 
-    let last_uid = get_last_fetched_uid(&conn)?;
+    let last_uid = get_last_fetched_uid(&conn).await?;
 
     println!("Authenticating...");
-    let mut session = get_session(&username, &password, client)?;
+    let mut session = get_session(&username, &password, client).await?;
 
     let mailbox = session.examine("INBOX")?;
 
@@ -53,8 +54,8 @@ fn main() -> anyhow::Result<()> {
         // Extract fields
         let envelope = message.envelope().expect("Server did not return ENVELOPE");
         let _is_seen = is_seen(message);
-        let subject = get_subject(envelope);
-        let sender = get_sender(envelope);
+        let subject = get_subject(envelope).await;
+        let sender = get_sender(envelope).await;
         let receiver = get_receiver(envelope);
         let datetime = get_datetime(envelope);
 
@@ -68,7 +69,7 @@ fn main() -> anyhow::Result<()> {
             body: "".to_string(),
         };
 
-        create_email_entry(&conn, email)?;
+        create_email_entry(&conn, email).await?;
     }
 
     session.logout()?;

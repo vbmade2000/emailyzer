@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use crate::types::Email;
 
-pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> {
+pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;
 
     // Create required tables if required
@@ -30,7 +30,7 @@ pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> 
     Ok(conn)
 }
 
-pub fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()> {
+pub async fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO emails (uid, subject, sender, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         (
@@ -47,7 +47,7 @@ pub fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()>
     Ok(())
 }
 
-pub fn get_last_fetched_uid(conn: &Connection) -> anyhow::Result<u32> {
+pub async fn get_last_fetched_uid(conn: &Connection) -> anyhow::Result<u32> {
     let last_uid: u32 = conn.query_row("SELECT COALESCE(MAX(uid), 0) FROM emails", [], |row| {
         row.get(0)
     })?;
