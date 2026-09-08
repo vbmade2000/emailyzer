@@ -7,9 +7,11 @@ use crate::types::Email;
 pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;
 
-    // Create required tables
-    conn.execute(
-        "CREATE TABLE emails 
+    // Create required tables if required
+    if !conn.table_exists(None, "emails")? {
+        println!("Couldn't find `emails` table, creating it");
+        conn.execute(
+            "CREATE TABLE emails 
         (
             uid INTEGER PRIMAEY KEY,
             subject TEXT,
@@ -19,9 +21,11 @@ pub fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connection> 
             timestamp TEXT NOT NULL,
             body TEXT
         )",
-        (),
-    )?;
-
+            (),
+        )?;
+    } else {
+        println!("`emails` table is already present.");
+    }
     conn.is_autocommit();
     Ok(conn)
 }
