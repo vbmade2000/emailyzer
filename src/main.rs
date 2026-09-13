@@ -18,9 +18,13 @@ mod types;
     name = "emailyzer",
     version = "0.1.0",
     author = "Malhar Vora <vbmade2000 at gmail dot com>",
-    about = "A fast email analysis tool"
+    about = "Yet another email analysis tool"
 )]
 struct Cli {
+    /// Path to the log file
+    #[arg(short, long, value_name = "FILE", global = true)]
+    pub log_file: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -28,25 +32,32 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Fetch emails from the provider
-    Fetch(FetchArgs),
+    Fetch,
+    // Analyze the fetched emails
+    Analyze(AnalyzeArgs),
 }
 
 #[derive(Args, Debug)]
-pub struct FetchArgs {
-    /// Path to the log file
+pub struct AnalyzeArgs {
+    /// Perform fresh calculations from existing database entries
     #[arg(short, long)]
-    pub log_file: Option<PathBuf>,
+    pub refresh: Option<bool>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    set_tracing(cli.log_file)?;
+
     let commands = cli.command;
     match commands {
-        Commands::Fetch(fetchargs) => {
-            set_tracing(fetchargs.log_file)?;
+        Commands::Fetch => {
             fetch_emails().await?;
+        }
+        Commands::Analyze(_analyzeargs) => {
+            // analyze_emails(analyzeargs.refresh.unwrap_or(false)).await?;
+            todo!()
         }
     }
 
