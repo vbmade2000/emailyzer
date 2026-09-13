@@ -160,7 +160,7 @@ pub async fn read_emails(conn: &Connection) -> anyhow::Result<Vec<Email>> {
 
 /// Read sender email stats from "sender_email_stats" database table
 pub async fn read_sender_email_stats(conn: &Connection) -> anyhow::Result<Vec<(String, u32)>> {
-    let mut stmt = conn.prepare("SELECT sender, total_emails FROM sender_email_statsss")?;
+    let mut stmt = conn.prepare("SELECT sender, total_emails FROM sender_email_stats")?;
     let senders: Vec<(String, u32)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .map(|row| match row {

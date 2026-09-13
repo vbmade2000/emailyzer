@@ -7,7 +7,7 @@ use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-use crate::email::{analyze_emails, fetch_emails};
+use crate::email::{get_sender_stats, sync_emails};
 
 mod database;
 mod email;
@@ -32,13 +32,13 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Fetch emails from the provider
-    Fetch,
+    Sync,
     // Analyze the fetched emails
-    Analyze(AnalyzeArgs),
+    Senders(SendersArgs),
 }
 
 #[derive(Args, Debug)]
-pub struct AnalyzeArgs {
+pub struct SendersArgs {
     /// Perform fresh calculations from existing database entries
     #[arg(short, long)]
     pub refresh: bool,
@@ -52,11 +52,12 @@ async fn main() -> anyhow::Result<()> {
 
     let commands = cli.command;
     match commands {
-        Commands::Fetch => {
-            fetch_emails().await?;
+        Commands::Sync => {
+            sync_emails().await?;
+            println!("Sync completed successfully \n");
         }
-        Commands::Analyze(analyzeargs) => {
-            analyze_emails(analyzeargs.refresh).await?;
+        Commands::Senders(sendersargs) => {
+            get_sender_stats(sendersargs.refresh).await?;
         }
     }
 

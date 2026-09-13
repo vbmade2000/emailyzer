@@ -113,7 +113,7 @@ fn format_address(address: &Address) -> String {
     format!("{mailbox}@{host}")
 }
 
-pub async fn fetch_emails() -> anyhow::Result<()> {
+pub async fn sync_emails() -> anyhow::Result<()> {
     let conn = create_or_open_db("emailyzer.db").await?;
 
     // Gmail IMAP server.
@@ -180,7 +180,7 @@ pub async fn fetch_emails() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn analyze_emails(refresh: bool) -> anyhow::Result<()> {
+pub async fn get_sender_stats(refresh: bool) -> anyhow::Result<()> {
     let conn = create_or_open_db("emailyzer.db").await?;
 
     // Prepare table for display
@@ -213,11 +213,19 @@ pub async fn analyze_emails(refresh: bool) -> anyhow::Result<()> {
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
         let senders = read_sender_email_stats(&conn).await?;
+
+        if senders.is_empty() {
+            info!(
+                "No sender email stats found in database. Please use --refresh flag to sync emails first"
+            );
+            return Ok(());
+        }
+
         for (sender, count) in senders {
             table.add_row(vec![sender, count.to_string()]);
         }
     }
     println!("{table}");
-    
+
     Ok(())
 }
