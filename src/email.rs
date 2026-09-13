@@ -1,12 +1,17 @@
-use std::net::TcpStream;
+use std::{collections::HashMap, net::TcpStream};
 
+use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use imap::{Client, Session, types::Fetch};
 use native_tls::{TlsConnector, TlsStream};
 use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
 use crate::{
-    database::{create_email_entry, create_or_open_db, get_last_fetched_uid},
+    database::{
+        create_email_entry, create_or_open_db, create_sender_email_stats_entry,
+        delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails,
+        read_sender_email_stats,
+    },
     types::Email,
 };
 
@@ -143,7 +148,7 @@ pub async fn fetch_emails() -> anyhow::Result<()> {
 
     info!("Fetching {} messages", messages.len());
 
-    for message in messages.iter().take(10) {
+    for message in messages.iter().take(100) {
         // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
         let uid = message.uid.unwrap_or(0);
 
@@ -172,5 +177,47 @@ pub async fn fetch_emails() -> anyhow::Result<()> {
 
     info!("Session disconnected successfully.");
 
+    Ok(())
+}
+
+pub async fn analyze_emails(refresh: bool) -> anyhow::Result<()> {
+    let conn = create_or_open_db("emailyzer.db").await?;
+
+    // Prepare table for display
+    let mut table = Table::new();
+    table.set_header(vec!["Sender", "Emails"]);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_style(UTF8_FULL.with_rounded_corners());
+
+    if refresh {
+        info!("User has passed --refresh flag. Reading emails from database");
+        let emails: Vec<Email> = read_emails(&conn).await?;
+        info!("Fetched {} emails from database", emails.len());
+
+        let mut senders: HashMap<String, u32> = HashMap::new();
+
+        // Count emails sent by each unique sender
+        for email in emails {
+            let count = senders.entry(email.sender).or_insert(0);
+            *count += 1;
+        }
+
+        // Clear database table first to make fresh entries
+        delete_all_sender_email_stats_entries(&conn).await?;
+
+        // Save the stats in database because user has used --refresh flag. Also, print records on stdout
+        for (sender, count) in senders {
+            create_sender_email_stats_entry(&conn, sender.clone(), count).await?;
+            table.add_row(vec![sender, count.to_string()]);
+        }
+    } else {
+        info!("User has skipped --refresh flag. Reading existing sender email stats from database");
+        let senders = read_sender_email_stats(&conn).await?;
+        for (sender, count) in senders {
+            table.add_row(vec![sender, count.to_string()]);
+        }
+    }
+    println!("{table}");
+    
     Ok(())
 }

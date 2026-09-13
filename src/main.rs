@@ -7,7 +7,7 @@ use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-use crate::email::fetch_emails;
+use crate::email::{analyze_emails, fetch_emails};
 
 mod database;
 mod email;
@@ -41,7 +41,7 @@ enum Commands {
 pub struct AnalyzeArgs {
     /// Perform fresh calculations from existing database entries
     #[arg(short, long)]
-    pub refresh: Option<bool>,
+    pub refresh: bool,
 }
 
 #[tokio::main]
@@ -55,9 +55,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Fetch => {
             fetch_emails().await?;
         }
-        Commands::Analyze(_analyzeargs) => {
-            // analyze_emails(analyzeargs.refresh.unwrap_or(false)).await?;
-            todo!()
+        Commands::Analyze(analyzeargs) => {
+            analyze_emails(analyzeargs.refresh).await?;
         }
     }
 
