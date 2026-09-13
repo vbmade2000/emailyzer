@@ -34,10 +34,16 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
 }
 
 pub async fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Result<()> {
+    let uid = email.uid;
+
+    if uid_exists(conn, uid).await? {
+        debug!("Email with UID {} already exists, skipping", uid);
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO emails (uid, subject, sender, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         (
-            email.uid,
+            uid,
             email.subject,
             email.sender,
             email.receiver,
@@ -59,4 +65,20 @@ pub async fn get_last_fetched_uid(conn: &Connection) -> anyhow::Result<u32> {
         row.get(0)
     })?;
     Ok(last_uid)
+}
+
+pub async fn uid_exists(conn: &Connection, uid: u32) -> anyhow::Result<bool> {
+    let email_uid = conn.query_one("SELECT uid from emails where uid = ?", [uid], |row| {
+        row.get::<usize, u32>(0)
+    });
+
+    let uid_exists = match email_uid {
+        Ok(_) => true,
+        Err(e) => match e {
+            rusqlite::Error::QueryReturnedNoRows => false,
+            _ => return Err(e.into()),
+        },
+    };
+
+    Ok(uid_exists)
 }
