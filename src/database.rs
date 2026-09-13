@@ -15,7 +15,7 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
         conn.execute(
             "CREATE TABLE emails 
         (
-            uid INTEGER PRIMAEY KEY,
+            uid INTEGER PRIMARY KEY,
             subject TEXT,
             sender TEXT NOT NULL,
             receiver TEXT NOT NULL,
@@ -29,6 +29,22 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
     } else {
         info!("`emails` table is already present.");
     }
+
+    if !conn.table_exists(None, "sender_email_stats")? {
+        info!("Couldn't find `sender_email_stats` table, creating it");
+        conn.execute(
+            "CREATE TABLE sender_email_stats
+        (
+            sender TEXT PRIMARY KEY,
+            total_emails INTEGER
+        )",
+            (),
+        )?;
+        info!("Table `sender_email_stats` created successfully");
+    } else {
+        info!("`sender_email_stats` table is already present.");
+    }
+
     conn.is_autocommit();
     Ok(conn)
 }
@@ -82,3 +98,10 @@ pub async fn uid_exists(conn: &Connection, uid: u32) -> anyhow::Result<bool> {
 
     Ok(uid_exists)
 }
+
+// pub async fn read_emails(conn: &Connection) -> anyhow::Result<Vec<Email>> {
+//     let last_uid: u32 = conn.query_row("SELECT COALESCE(MAX(uid), 0) FROM emails", [], |row| {
+//         row.get(0)
+//     })?;
+//     Ok(vec![])
+// }
