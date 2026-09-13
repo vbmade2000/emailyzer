@@ -4,7 +4,7 @@ Simple yet effective email analyzer
 ## Install dependencies
 ```
 $ sudo apt update 
-$ sudo apt install pkg-config libssl-dev
+$ sudo apt install pkg-config libssl-dev libsqlite3-dev
 ```
 
 ## Export Gmail credentials
