@@ -42,6 +42,9 @@ pub struct SendersArgs {
     /// Perform fresh calculations from existing database entries
     #[arg(short, long)]
     pub refresh: bool,
+    /// Filter by senders. eg: --sender "sender1@example.com" --sender "sender2@example.com"
+    #[arg(short, long, value_name = "SENDER", action = clap::ArgAction::Append)]
+    pub sender: Vec<String>,
 }
 
 #[tokio::main]
@@ -57,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Sync completed successfully \n");
         }
         Commands::Senders(sendersargs) => {
-            get_sender_stats(sendersargs.refresh).await?;
+            get_sender_stats(sendersargs).await?;
         }
     }
 

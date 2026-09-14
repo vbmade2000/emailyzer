@@ -7,6 +7,7 @@ use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
 use crate::{
+    SendersArgs,
     database::{
         create_email_entry, create_or_open_db, create_sender_email_stats_entry,
         delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails,
@@ -180,7 +181,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn get_sender_stats(refresh: bool) -> anyhow::Result<()> {
+pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
     let conn = create_or_open_db("emailyzer.db").await?;
 
     // Prepare table for display
@@ -189,7 +190,9 @@ pub async fn get_sender_stats(refresh: bool) -> anyhow::Result<()> {
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.load_style(UTF8_FULL.with_rounded_corners());
 
-    if refresh {
+    let preferred_senders = sendersargs.sender;
+
+    if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
         let emails: Vec<Email> = read_emails(&conn).await?;
         info!("Fetched {} emails from database", emails.len());
@@ -208,6 +211,10 @@ pub async fn get_sender_stats(refresh: bool) -> anyhow::Result<()> {
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (sender, count) in senders {
             create_sender_email_stats_entry(&conn, sender.clone(), count).await?;
+            // We show only records from preferred senders if user has passed --sender flag
+            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
+                continue;
+            }
             table.add_row(vec![sender, count.to_string()]);
         }
     } else {
@@ -222,6 +229,10 @@ pub async fn get_sender_stats(refresh: bool) -> anyhow::Result<()> {
         }
 
         for (sender, count) in senders {
+            // We show only records from preferred senders if user has passed --sender flag
+            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
+                continue;
+            }
             table.add_row(vec![sender, count.to_string()]);
         }
     }
