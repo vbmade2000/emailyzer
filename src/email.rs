@@ -7,7 +7,7 @@ use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
 use crate::{
-    SendersArgs,
+    SendersArgs, SortBy,
     database::{
         create_email_entry, create_or_open_db, create_sender_email_stats_entry,
         delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails,
@@ -192,6 +192,8 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     let preferred_senders = sendersargs.sender;
 
+    let mut rows: Vec<(String, u32)> = Vec::new();
+
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
         let emails: Vec<Email> = read_emails(&conn).await?;
@@ -215,7 +217,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            table.add_row(vec![sender, count.to_string()]);
+            rows.push((sender, count));
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
@@ -233,9 +235,21 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            table.add_row(vec![sender, count.to_string()]);
+            rows.push((sender, count));
         }
     }
+
+    // Sort the rows based on --sort-by flag, if provided
+    match sendersargs.sort_by {
+        Some(SortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.1)),
+        Some(SortBy::Sender) => rows.sort_by(|a, b| a.0.cmp(&b.0)),
+        None => {}
+    }
+
+    for (sender, count) in rows {
+        table.add_row(vec![sender, count.to_string()]);
+    }
+
     println!("{table}");
 
     Ok(())

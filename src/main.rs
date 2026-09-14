@@ -37,6 +37,12 @@ enum Commands {
     Senders(SendersArgs),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum SortBy {
+    Emails,
+    Sender,
+}
+
 #[derive(Args, Debug)]
 pub struct SendersArgs {
     /// Perform fresh calculations from existing database entries
@@ -45,6 +51,11 @@ pub struct SendersArgs {
     /// Filter by senders. eg: --sender "sender1@example.com" --sender "sender2@example.com"
     #[arg(short, long, value_name = "SENDER", action = clap::ArgAction::Append)]
     pub sender: Vec<String>,
+    /// Sort by email or emails
+    #[arg(short, long, value_name = "SORT_BY")]
+    // Make this accept only two choices: emails or sender
+    #[arg(value_parser = clap::value_parser!(SortBy))]
+    pub sort_by: Option<SortBy>,
 }
 
 #[tokio::main]
