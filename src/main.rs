@@ -52,10 +52,11 @@ pub struct SendersArgs {
     #[arg(short, long, value_name = "SENDER", action = clap::ArgAction::Append)]
     pub sender: Vec<String>,
     /// Sort by email or emails
-    #[arg(short, long, value_name = "SORT_BY")]
-    // Make this accept only two choices: emails or sender
-    #[arg(value_parser = clap::value_parser!(SortBy))]
+    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(SortBy))]
     pub sort_by: Option<SortBy>,
+    /// Show top N senders by no of emails
+    #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u8))]
+    pub top: Option<u8>,
 }
 
 #[tokio::main]

@@ -246,6 +246,12 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         None => {}
     }
 
+    // Show top N senders by no of emails if user has passed --top flag
+    if let Some(top) = sendersargs.top {
+        rows.sort_by_key(|b| std::cmp::Reverse(b.1));
+        rows.truncate(top as usize);
+    }
+
     for (sender, count) in rows {
         table.add_row(vec![sender, count.to_string()]);
     }
