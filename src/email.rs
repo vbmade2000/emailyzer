@@ -3,7 +3,7 @@ use std::{collections::HashMap, net::TcpStream};
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use imap::{Client, Session, types::Fetch};
 use native_tls::{TlsConnector, TlsStream};
-use tokio_imap::types::{Address, Envelope};
+use tokio_imap::types::{Address, BodyContentCommon, BodyStructure, Envelope};
 use tracing::info;
 
 use crate::{
@@ -99,6 +99,28 @@ pub fn is_seen(message: &Fetch) -> bool {
     message.flags().contains(&imap::types::Flag::Seen)
 }
 
+// Check if email has an attachment by inspecting its BODYSTRUCTURE
+pub fn has_attachment(body_structure: &BodyStructure) -> bool {
+    match body_structure {
+        BodyStructure::Multipart { common, bodies, .. } => {
+            is_attachment_disposition(common) || bodies.iter().any(has_attachment)
+        }
+        BodyStructure::Basic { common, .. } => is_attachment_disposition(common),
+        BodyStructure::Text { common, .. } => is_attachment_disposition(common),
+        BodyStructure::Message { common, body, .. } => {
+            is_attachment_disposition(common) || has_attachment(body)
+        }
+    }
+}
+
+/// Check if a body part's content-disposition indicates it is an attachment
+fn is_attachment_disposition(common: &BodyContentCommon) -> bool {
+    common
+        .disposition
+        .as_ref()
+        .is_some_and(|disposition| disposition.ty.eq_ignore_ascii_case("attachment"))
+}
+
 /// Format email address
 fn format_address(address: &Address) -> String {
     let mailbox = address
@@ -149,7 +171,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
     info!("Fetching {} messages", messages.len());
 
-    for message in messages.iter().take(10) {
+    for message in messages.iter().take(100) {
         // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
         let uid = message.uid.unwrap_or(0);
 
@@ -161,11 +183,26 @@ pub async fn sync_emails() -> anyhow::Result<()> {
         let receiver = get_receiver(envelope);
         let datetime = get_datetime(envelope);
 
-        // info!("Sender: {:?}", sender.clone());
-        // info!("Flags: {:?}", &message.flags());
-        // info!("Subject: {:?}", subject.clone());
-        // info!("Datetime: {:?}", datetime.clone());
-        // info!("---------------------------------------------------");
+        // TODO: Try the way mentioned at the end of this file.
+        // Fetch BODYSTRUCTURE per-message (rather than batching it with the rest) so that a
+        // single message with a structure the parser chokes on (a known imap-proto limitation
+        // with some of Gmail's BODYSTRUCTURE responses) doesn't fail the entire batch fetch.
+        let has_attachment = match session.uid_fetch(uid.to_string(), "BODYSTRUCTURE") {
+            Ok(bs_messages) => bs_messages
+                .iter()
+                .next()
+                .and_then(|m| m.bodystructure())
+                .map(has_attachment)
+                .unwrap_or(false),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to fetch/parse BODYSTRUCTURE for UID {}: {}. Assuming no attachment.",
+                    uid,
+                    error
+                );
+                false
+            }
+        };
 
         let email = Email {
             uid,
@@ -173,7 +210,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
             sender,
             read_status: is_seen,
             receiver,
-            attachment: false,
+            attachment: has_attachment,
             timestamp: datetime,
             body: "".to_string(),
         };
@@ -193,31 +230,44 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     // Prepare table for display
     let mut table = Table::new();
-    table.set_header(vec!["Sender", "Emails", "Read", "Unread"]);
+    table.set_header(vec![
+        "Sender",
+        "Emails",
+        "Read",
+        "Unread",
+        "Attachment",
+        "No Attachment",
+    ]);
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.load_style(UTF8_FULL.with_rounded_corners());
 
     let preferred_senders = sendersargs.sender;
 
-    // (sender, emails, read-emails, unread-emails)
-    let mut rows: Vec<(String, u32, u32, u32)> = Vec::new();
+    // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
+    let mut rows: Vec<(String, u32, u32, u32, u32, u32)> = Vec::new();
 
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
         let emails: Vec<Email> = read_emails_from_database(&conn).await?;
         info!("Fetched {} emails from database", emails.len());
 
-        // (sender, emails, read-emails, unread-emails)
-        let mut senders: HashMap<String, (u32, u32, u32)> = HashMap::new();
+        // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
+        let mut senders: HashMap<String, (u32, u32, u32, u32, u32)> = HashMap::new();
 
         // Count emails sent by each unique sender
         for email in emails {
-            let count = senders.entry(email.sender).or_insert((0, 0, 0));
+            let count = senders.entry(email.sender).or_insert((0, 0, 0, 0, 0));
             count.0 += 1;
             if email.read_status {
                 count.1 += 1;
             } else {
                 count.2 += 1;
+            }
+
+            if email.attachment {
+                count.3 += 1;
+            } else {
+                count.4 += 1;
             }
         }
 
@@ -226,13 +276,21 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (sender, count) in senders {
-            create_sender_email_stats_entry(&conn, sender.clone(), count.0, count.1, count.2)
-                .await?;
+            create_sender_email_stats_entry(
+                &conn,
+                sender.clone(),
+                count.0,
+                count.1,
+                count.2,
+                count.3,
+                count.4,
+            )
+            .await?;
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            rows.push((sender, count.0, count.1, count.2));
+            rows.push((sender, count.0, count.1, count.2, count.3, count.4));
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
@@ -245,12 +303,19 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        for (sender, count, read, unread) in senders_stats {
+        for (sender, count, read, unread, with_attachment, without_attachment) in senders_stats {
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            rows.push((sender, count, read, unread));
+            rows.push((
+                sender,
+                count,
+                read,
+                unread,
+                with_attachment,
+                without_attachment,
+            ));
         }
     }
 
@@ -267,12 +332,14 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         rows.truncate(top as usize);
     }
 
-    for (sender, count, read, unread) in rows {
+    for (sender, count, read, unread, with_attachment, without_attachment) in rows {
         table.add_row(vec![
             sender,
             count.to_string(),
             read.to_string(),
             unread.to_string(),
+            with_attachment.to_string(),
+            without_attachment.to_string(),
         ]);
     }
 
@@ -280,3 +347,23 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// let messages = session.uid_fetch(
+//     uid.to_string(),
+//     "(UID BODY.PEEK[])"
+// )?;
+
+// for message in messages.iter() {
+//     if let Some(body) = message.body() {
+//         let parsed = mailparse::parse_mail(body)?;
+
+//         let has_attachment = parsed.subparts.iter().any(|part| {
+//             part.get_headers()
+//                 .get_first_value("Content-Disposition")
+//                 .map(|v| v.to_lowercase().starts_with("attachment"))
+//                 .unwrap_or(false)
+//         });
+
+//         println!("Has attachment: {}", has_attachment);
+//     }
+// }

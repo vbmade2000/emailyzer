@@ -41,7 +41,9 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
             sender TEXT PRIMARY KEY,
             total_emails INTEGER,
             read_emails INTEGER,
-            unread_emails INTEGER
+            unread_emails INTEGER,
+            attachment_count INTEGER,
+            no_attachment_count INTEGER
         )",
             (),
         )?;
@@ -90,10 +92,12 @@ pub async fn create_sender_email_stats_entry(
     total_emails: u32,
     read_emails: u32,
     unread_emails: u32,
+    attachment_count: u32,
+    no_attachment_count: u32,
 ) -> anyhow::Result<()> {
     conn.execute(
-        "INSERT INTO sender_email_stats (sender, total_emails, read_emails, unread_emails) VALUES (?1, ?2, ?3, ?4)",
-        (sender, total_emails, read_emails, unread_emails),
+        "INSERT INTO sender_email_stats (sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count),
     )?;
     Ok(())
 }
@@ -131,7 +135,8 @@ pub async fn uid_exists(conn: &Connection, uid: u32) -> anyhow::Result<bool> {
 
 /// Read all emails from "emails" database table
 pub async fn read_emails_from_database(conn: &Connection) -> anyhow::Result<Vec<Email>> {
-    let mut stmt = conn.prepare("SELECT uid, sender, timestamp, read_status FROM emails")?;
+    let mut stmt =
+        conn.prepare("SELECT uid, sender, timestamp, read_status, has_attachment FROM emails")?;
     let emails: Vec<Email> = stmt
         .query_map([], |row| {
             Ok(Email {
@@ -140,7 +145,7 @@ pub async fn read_emails_from_database(conn: &Connection) -> anyhow::Result<Vec<
                 sender: row.get(1)?,
                 read_status: row.get(3)?,
                 receiver: "".to_string(),
-                attachment: false,
+                attachment: row.get(4)?,
                 timestamp: row.get(2)?,
                 body: "".to_string(),
             })
@@ -169,19 +174,26 @@ pub async fn read_emails_from_database(conn: &Connection) -> anyhow::Result<Vec<
 /// Read sender email stats from "sender_email_stats" database table
 pub async fn read_sender_email_stats(
     conn: &Connection,
-) -> anyhow::Result<Vec<(String, u32, u32, u32)>> {
+) -> anyhow::Result<Vec<(String, u32, u32, u32, u32, u32)>> {
     let mut stmt = conn.prepare(
-        "SELECT sender, total_emails, read_emails, unread_emails FROM sender_email_stats",
+        "SELECT sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count FROM sender_email_stats",
     )?;
-    let senders: Vec<(String, u32, u32, u32)> = stmt
+    let senders: Vec<(String, u32, u32, u32, u32, u32)> = stmt
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
         })?
         .map(|row| match row {
-            Ok(r) => (r.0, r.1, r.2, r.3),
+            Ok(r) => (r.0, r.1, r.2, r.3, r.4, r.5),
             Err(e) => {
                 tracing::error!("Error while reading sender email stats: {}", e);
-                ("".to_string(), 0, 0, 0)
+                ("".to_string(), 0, 0, 0, 0, 0)
             }
         })
         .collect();
