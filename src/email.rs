@@ -10,7 +10,7 @@ use crate::{
     SendersArgs, SortBy,
     database::{
         create_email_entry, create_or_open_db, create_sender_email_stats_entry,
-        delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails,
+        delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails_from_database,
         read_sender_email_stats,
     },
     types::Email,
@@ -149,22 +149,29 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
     info!("Fetching {} messages", messages.len());
 
-    for message in messages.iter().take(100) {
+    for message in messages.iter().take(10) {
         // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
         let uid = message.uid.unwrap_or(0);
 
         // Extract fields
         let envelope = message.envelope().expect("Server did not return ENVELOPE");
-        let _is_seen = is_seen(message);
+        let is_seen = is_seen(message);
         let subject = get_subject(envelope).await;
         let sender = get_sender(envelope).await;
         let receiver = get_receiver(envelope);
         let datetime = get_datetime(envelope);
 
+        // info!("Sender: {:?}", sender.clone());
+        // info!("Flags: {:?}", &message.flags());
+        // info!("Subject: {:?}", subject.clone());
+        // info!("Datetime: {:?}", datetime.clone());
+        // info!("---------------------------------------------------");
+
         let email = Email {
             uid,
             subject,
             sender,
+            read_status: is_seen,
             receiver,
             attachment: false,
             timestamp: datetime,
@@ -186,25 +193,32 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     // Prepare table for display
     let mut table = Table::new();
-    table.set_header(vec!["Sender", "Emails"]);
+    table.set_header(vec!["Sender", "Emails", "Read", "Unread"]);
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.load_style(UTF8_FULL.with_rounded_corners());
 
     let preferred_senders = sendersargs.sender;
 
-    let mut rows: Vec<(String, u32)> = Vec::new();
+    // (sender, emails, read-emails, unread-emails)
+    let mut rows: Vec<(String, u32, u32, u32)> = Vec::new();
 
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
-        let emails: Vec<Email> = read_emails(&conn).await?;
+        let emails: Vec<Email> = read_emails_from_database(&conn).await?;
         info!("Fetched {} emails from database", emails.len());
 
-        let mut senders: HashMap<String, u32> = HashMap::new();
+        // (sender, emails, read-emails, unread-emails)
+        let mut senders: HashMap<String, (u32, u32, u32)> = HashMap::new();
 
         // Count emails sent by each unique sender
         for email in emails {
-            let count = senders.entry(email.sender).or_insert(0);
-            *count += 1;
+            let count = senders.entry(email.sender).or_insert((0, 0, 0));
+            count.0 += 1;
+            if email.read_status {
+                count.1 += 1;
+            } else {
+                count.2 += 1;
+            }
         }
 
         // Clear database table first to make fresh entries
@@ -212,30 +226,31 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (sender, count) in senders {
-            create_sender_email_stats_entry(&conn, sender.clone(), count).await?;
+            create_sender_email_stats_entry(&conn, sender.clone(), count.0, count.1, count.2)
+                .await?;
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            rows.push((sender, count));
+            rows.push((sender, count.0, count.1, count.2));
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
-        let senders = read_sender_email_stats(&conn).await?;
+        let senders_stats = read_sender_email_stats(&conn).await?;
 
-        if senders.is_empty() {
+        if senders_stats.is_empty() {
             info!(
                 "No sender email stats found in database. Please use --refresh flag to sync emails first"
             );
             return Ok(());
         }
 
-        for (sender, count) in senders {
+        for (sender, count, read, unread) in senders_stats {
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            rows.push((sender, count));
+            rows.push((sender, count, read, unread));
         }
     }
 
@@ -252,8 +267,13 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         rows.truncate(top as usize);
     }
 
-    for (sender, count) in rows {
-        table.add_row(vec![sender, count.to_string()]);
+    for (sender, count, read, unread) in rows {
+        table.add_row(vec![
+            sender,
+            count.to_string(),
+            read.to_string(),
+            unread.to_string(),
+        ]);
     }
 
     println!("{table}");

@@ -21,6 +21,7 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
             subject TEXT,
             sender TEXT NOT NULL,
             receiver TEXT NOT NULL,
+            read_status bool,
             has_attachment bool NOT NULL,
             timestamp TEXT NOT NULL,
             body TEXT
@@ -38,7 +39,9 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
             "CREATE TABLE sender_email_stats
         (
             sender TEXT PRIMARY KEY,
-            total_emails INTEGER
+            total_emails INTEGER,
+            read_emails INTEGER,
+            unread_emails INTEGER
         )",
             (),
         )?;
@@ -60,11 +63,12 @@ pub async fn create_email_entry(conn: &Connection, email: Email) -> anyhow::Resu
         return Ok(());
     }
     conn.execute(
-        "INSERT INTO emails (uid, subject, sender, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         (
             uid,
             email.subject,
             email.sender,
+            email.read_status,
             email.receiver,
             email.attachment,
             email.timestamp,
@@ -84,10 +88,12 @@ pub async fn create_sender_email_stats_entry(
     conn: &Connection,
     sender: String,
     total_emails: u32,
+    read_emails: u32,
+    unread_emails: u32,
 ) -> anyhow::Result<()> {
     conn.execute(
-        "INSERT INTO sender_email_stats (sender, total_emails) VALUES (?1, ?2)",
-        (sender, total_emails),
+        "INSERT INTO sender_email_stats (sender, total_emails, read_emails, unread_emails) VALUES (?1, ?2, ?3, ?4)",
+        (sender, total_emails, read_emails, unread_emails),
     )?;
     Ok(())
 }
@@ -124,14 +130,15 @@ pub async fn uid_exists(conn: &Connection, uid: u32) -> anyhow::Result<bool> {
 }
 
 /// Read all emails from "emails" database table
-pub async fn read_emails(conn: &Connection) -> anyhow::Result<Vec<Email>> {
-    let mut stmt = conn.prepare("SELECT uid, sender, timestamp FROM emails")?;
+pub async fn read_emails_from_database(conn: &Connection) -> anyhow::Result<Vec<Email>> {
+    let mut stmt = conn.prepare("SELECT uid, sender, timestamp, read_status FROM emails")?;
     let emails: Vec<Email> = stmt
         .query_map([], |row| {
             Ok(Email {
                 uid: row.get(0)?,
                 subject: "".to_string(),
                 sender: row.get(1)?,
+                read_status: row.get(3)?,
                 receiver: "".to_string(),
                 attachment: false,
                 timestamp: row.get(2)?,
@@ -146,6 +153,7 @@ pub async fn read_emails(conn: &Connection) -> anyhow::Result<Vec<Email>> {
                     uid: 0,
                     subject: "".to_string(),
                     sender: "".to_string(),
+                    read_status: false,
                     receiver: "".to_string(),
                     attachment: false,
                     timestamp: "".to_string(),
@@ -159,15 +167,21 @@ pub async fn read_emails(conn: &Connection) -> anyhow::Result<Vec<Email>> {
 }
 
 /// Read sender email stats from "sender_email_stats" database table
-pub async fn read_sender_email_stats(conn: &Connection) -> anyhow::Result<Vec<(String, u32)>> {
-    let mut stmt = conn.prepare("SELECT sender, total_emails FROM sender_email_stats")?;
-    let senders: Vec<(String, u32)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+pub async fn read_sender_email_stats(
+    conn: &Connection,
+) -> anyhow::Result<Vec<(String, u32, u32, u32)>> {
+    let mut stmt = conn.prepare(
+        "SELECT sender, total_emails, read_emails, unread_emails FROM sender_email_stats",
+    )?;
+    let senders: Vec<(String, u32, u32, u32)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
         .map(|row| match row {
-            Ok(sender) => sender,
+            Ok(r) => (r.0, r.1, r.2, r.3),
             Err(e) => {
                 tracing::error!("Error while reading sender email stats: {}", e);
-                ("".to_string(), 0)
+                ("".to_string(), 0, 0, 0)
             }
         })
         .collect();
