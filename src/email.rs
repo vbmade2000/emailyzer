@@ -337,3 +337,427 @@ async fn _get_mailboxes(
 
     Ok(mailbox_names)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_envelope<'a>(
+        subject: Option<&'a [u8]>,
+        from: Option<Vec<Address<'a>>>,
+        to: Option<Vec<Address<'a>>>,
+        date: Option<&'a [u8]>,
+    ) -> Envelope<'a> {
+        Envelope {
+            date,
+            subject,
+            from,
+            sender: None,
+            reply_to: None,
+            to,
+            cc: None,
+            bcc: None,
+            in_reply_to: None,
+            message_id: None,
+        }
+    }
+
+    fn make_address<'a>(mailbox: Option<&'a [u8]>, host: Option<&'a [u8]>) -> Address<'a> {
+        Address {
+            name: None,
+            adl: None,
+            mailbox,
+            host,
+        }
+    }
+
+    // get_subject -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_subject_returns_subject_when_present() {
+        let envelope = make_envelope(Some(b"Hello world"), None, None, None);
+        assert_eq!(get_subject(&envelope).await, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn get_subject_returns_placeholder_when_missing() {
+        let envelope = make_envelope(None, None, None, None);
+        assert_eq!(get_subject(&envelope).await, "<no subject>");
+    }
+
+    #[tokio::test]
+    async fn get_subject_returns_placeholder_on_invalid_utf8() {
+        let envelope = make_envelope(Some(&[0xff, 0xfe]), None, None, None);
+        assert_eq!(get_subject(&envelope).await, "<no subject>");
+    }
+
+    #[tokio::test]
+    async fn get_subject_returns_empty_string_when_subject_is_empty() {
+        let envelope = make_envelope(Some(b""), None, None, None);
+        assert_eq!(get_subject(&envelope).await, "");
+    }
+
+    // get_sender ------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_sender_returns_formatted_address() {
+        let envelope = make_envelope(
+            None,
+            Some(vec![make_address(Some(b"malhar"), Some(b"example.com"))]),
+            None,
+            None,
+        );
+        assert_eq!(get_sender(&envelope).await, "malhar@example.com");
+    }
+
+    #[tokio::test]
+    async fn get_sender_uses_first_address_only() {
+        let envelope = make_envelope(
+            None,
+            Some(vec![
+                make_address(Some(b"malhar"), Some(b"example.com")),
+                make_address(Some(b"nimesh"), Some(b"example.com")),
+            ]),
+            None,
+            None,
+        );
+        assert_eq!(get_sender(&envelope).await, "malhar@example.com");
+    }
+
+    #[tokio::test]
+    async fn get_sender_returns_placeholder_when_missing() {
+        let envelope = make_envelope(None, None, None, None);
+        assert_eq!(get_sender(&envelope).await, "<unknown sender>");
+    }
+
+    #[tokio::test]
+    async fn get_sender_returns_placeholder_when_from_is_empty() {
+        let envelope = make_envelope(None, Some(vec![]), None, None);
+        assert_eq!(get_sender(&envelope).await, "<unknown sender>");
+    }
+
+    #[tokio::test]
+    async fn get_sender_handles_missing_mailbox_and_host() {
+        let envelope = make_envelope(None, Some(vec![make_address(None, None)]), None, None);
+        assert_eq!(get_sender(&envelope).await, "<unknown>@<unknown>");
+    }
+
+    #[tokio::test]
+    async fn get_sender_handles_invalid_utf8() {
+        let envelope = make_envelope(
+            None,
+            Some(vec![make_address(Some(&[0xff]), Some(&[0xfe]))]),
+            None,
+            None,
+        );
+        assert_eq!(get_sender(&envelope).await, "<unknown>@<unknown>");
+    }
+
+    // get_receiver ----------------------------------------------------------
+
+    #[test]
+    fn get_receiver_returns_formatted_address() {
+        let envelope = make_envelope(
+            None,
+            None,
+            Some(vec![make_address(Some(b"malhar"), Some(b"example.com"))]),
+            None,
+        );
+        assert_eq!(get_receiver(&envelope), "malhar@example.com");
+    }
+
+    #[test]
+    fn get_receiver_uses_first_address_only() {
+        let envelope = make_envelope(
+            None,
+            None,
+            Some(vec![
+                make_address(Some(b"nimesh"), Some(b"example.com")),
+                make_address(Some(b"adi"), Some(b"example.com")),
+            ]),
+            None,
+        );
+        assert_eq!(get_receiver(&envelope), "nimesh@example.com");
+    }
+
+    #[test]
+    fn get_receiver_returns_placeholder_when_missing() {
+        let envelope = make_envelope(None, None, None, None);
+        assert_eq!(get_receiver(&envelope), "<unknown receiver>");
+    }
+
+    #[test]
+    fn get_receiver_returns_placeholder_when_to_is_empty() {
+        let envelope = make_envelope(None, None, Some(vec![]), None);
+        assert_eq!(get_receiver(&envelope), "<unknown receiver>");
+    }
+
+    #[test]
+    fn get_receiver_handles_missing_mailbox_and_host() {
+        let envelope = make_envelope(None, None, Some(vec![make_address(None, None)]), None);
+        assert_eq!(get_receiver(&envelope), "<unknown>@<unknown>");
+    }
+
+    // get_datetime ----------------------------------------------------------
+
+    #[test]
+    fn get_datetime_returns_date_when_present() {
+        let envelope = make_envelope(None, None, None, Some(b"Mon, 1 Jan 2024 00:00:00 +0000"));
+        assert_eq!(get_datetime(&envelope), "Mon, 1 Jan 2024 00:00:00 +0000");
+    }
+
+    #[test]
+    fn get_datetime_returns_placeholder_when_missing() {
+        let envelope = make_envelope(None, None, None, None);
+        assert_eq!(get_datetime(&envelope), "<unknown date>");
+    }
+
+    #[test]
+    fn get_datetime_returns_placeholder_on_invalid_utf8() {
+        let envelope = make_envelope(None, None, None, Some(&[0xff, 0xfe]));
+        assert_eq!(get_datetime(&envelope), "<unknown date>");
+    }
+
+    // format_address --------------------------------------------------------
+
+    #[test]
+    fn format_address_combines_mailbox_and_host() {
+        let address = make_address(Some(b"malhar"), Some(b"example.com"));
+        assert_eq!(format_address(&address), "malhar@example.com");
+    }
+
+    #[test]
+    fn format_address_uses_unknown_for_missing_parts() {
+        let address = make_address(None, None);
+        assert_eq!(format_address(&address), "<unknown>@<unknown>");
+    }
+
+    #[test]
+    fn format_address_uses_unknown_for_invalid_utf8() {
+        let address = make_address(Some(&[0xff]), Some(&[0xfe]));
+        assert_eq!(format_address(&address), "<unknown>@<unknown>");
+    }
+
+    #[test]
+    fn format_address_keeps_valid_part_when_other_is_invalid() {
+        let address = make_address(Some(b"malhar"), Some(&[0xfe]));
+        assert_eq!(format_address(&address), "malhar@<unknown>");
+
+        let address = make_address(Some(&[0xff]), Some(b"example.com"));
+        assert_eq!(format_address(&address), "<unknown>@example.com");
+    }
+
+    // mail_has_attachment ---------------------------------------------------
+    // (private helper, reachable because tests are a child module of `email`)
+
+    #[test]
+    fn mail_without_attachment_returns_false() {
+        let raw = b"From: malhar@example.com\r\n\
+            To: malhar@example.com\r\n\
+            Subject: Hello\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Hello world\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(!mail_has_attachment(&parsed));
+    }
+
+    #[test]
+    fn mail_with_top_level_attachment_disposition_returns_true() {
+        let raw = b"From: malhar@example.com\r\n\
+            Content-Disposition: attachment; filename=\"test.txt\"\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Hello\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(mail_has_attachment(&parsed));
+    }
+
+    #[test]
+    fn mail_with_attachment_subpart_returns_true() {
+        let raw = b"From: malhar@example.com\r\n\
+            To: malhar@example.com\r\n\
+            Subject: files\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Hello\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: application/octet-stream\r\n\
+            Content-Disposition: attachment; filename=\"test.txt\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            aGVsbG8=\r\n\
+            --BOUNDARY--\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(mail_has_attachment(&parsed));
+    }
+
+    #[test]
+    fn mail_with_nested_attachment_returns_true() {
+        let raw = b"MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"OUTER\"\r\n\
+            \r\n\
+            --OUTER\r\n\
+            Content-Type: multipart/alternative; boundary=\"INNER\"\r\n\
+            \r\n\
+            --INNER\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Hello\r\n\
+            \r\n\
+            --INNER--\r\n\
+            \r\n\
+            --OUTER\r\n\
+            Content-Type: application/pdf\r\n\
+            Content-Disposition: attachment; filename=\"doc.pdf\"\r\n\
+            \r\n\
+            fake-bytes\r\n\
+            --OUTER--\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(mail_has_attachment(&parsed));
+    }
+
+    #[test]
+    fn mail_with_inline_disposition_returns_false() {
+        let raw = b"From: malhar@example.com\r\n\
+            To: malhar@example.com\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Hello\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: image/png\r\n\
+            Content-Disposition: inline; filename=\"image.png\"\r\n\
+            \r\n\
+            fake-bytes\r\n\
+            --BOUNDARY--\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(!mail_has_attachment(&parsed));
+    }
+
+    #[test]
+    fn mail_attachment_detection_is_case_insensitive() {
+        let raw = b"From: malhar@example.com\r\n\
+            Content-Type: application/octet-stream\r\n\
+            Content-Disposition: ATTACHMENT; filename=\"test.txt\"\r\n\
+            \r\n\
+            data\r\n";
+        let parsed = mailparse::parse_mail(raw).expect("test email should parse");
+        assert!(mail_has_attachment(&parsed));
+    }
+
+    // get_credentials -------------------------------------------------------
+    // Env vars are process-global, so guard these tests with a mutex and
+    // restore the original values afterwards.
+
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_saved_env() -> (
+        std::sync::MutexGuard<'static, ()>,
+        Option<String>,
+        Option<String>,
+    ) {
+        let guard = ENV_GUARD.lock().unwrap();
+        let username = std::env::var("GMAIL_USERNAME").ok();
+        let password = std::env::var("GMAIL_PWD").ok();
+        (guard, username, password)
+    }
+
+    fn restore_env(username: Option<String>, password: Option<String>) {
+        unsafe {
+            match username {
+                Some(value) => std::env::set_var("GMAIL_USERNAME", value),
+                None => std::env::remove_var("GMAIL_USERNAME"),
+            }
+            match password {
+                Some(value) => std::env::set_var("GMAIL_PWD", value),
+                None => std::env::remove_var("GMAIL_PWD"),
+            }
+        }
+    }
+
+    fn block_on_credentials() -> anyhow::Result<(String, String)> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build")
+            .block_on(get_credentials())
+    }
+
+    #[test]
+    fn get_credentials_returns_values_from_env() {
+        let (_guard, saved_username, saved_password) = with_saved_env();
+        unsafe {
+            std::env::set_var("GMAIL_USERNAME", "malhar@example.com");
+            std::env::set_var("GMAIL_PWD", "secret");
+        }
+
+        let result = block_on_credentials();
+
+        restore_env(saved_username, saved_password);
+        assert_eq!(
+            result.expect("credentials should be returned"),
+            ("malhar@example.com".to_string(), "secret".to_string())
+        );
+    }
+
+    #[test]
+    fn get_credentials_fails_when_username_is_missing() {
+        let (_guard, saved_username, saved_password) = with_saved_env();
+        unsafe {
+            std::env::remove_var("GMAIL_USERNAME");
+            std::env::set_var("GMAIL_PWD", "secret");
+        }
+
+        let result = block_on_credentials();
+
+        restore_env(saved_username, saved_password);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_credentials_fails_when_password_is_missing() {
+        let (_guard, saved_username, saved_password) = with_saved_env();
+        unsafe {
+            std::env::set_var("GMAIL_USERNAME", "malhar@example.com");
+            std::env::remove_var("GMAIL_PWD");
+        }
+
+        let result = block_on_credentials();
+
+        restore_env(saved_username, saved_password);
+        assert!(result.is_err());
+    }
+
+    // get_tls_connector -----------------------------------------------------
+
+    #[tokio::test]
+    async fn get_tls_connector_builds_successfully() {
+        assert!(get_tls_connector().await.is_ok());
+    }
+
+    // get_client ------------------------------------------------------------
+    // `.invalid` (RFC 2606) never resolves, so this exercises the error path
+    // without touching the real Gmail servers.
+
+    #[tokio::test]
+    async fn get_client_returns_error_for_unresolvable_host() {
+        let result = get_client("invalid.invalid", 993).await;
+        assert!(result.is_err());
+    }
+
+    // NOTE: `is_seen`, `sync_emails`, `get_sender_stats`, and `_get_mailboxes`
+    // are intentionally not unit-tested here. `is_seen` takes an
+    // `imap::types::Fetch` whose flag storage is `pub(crate)` to the `imap`
+    // crate, so it cannot be constructed from outside that crate. The others
+    // require a live IMAP connection and/or a SQLite database file.
+}
