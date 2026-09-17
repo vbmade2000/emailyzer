@@ -7,15 +7,7 @@ use native_tls::{TlsConnector, TlsStream};
 use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
-use crate::{
-    SendersArgs, SortBy,
-    database::{
-        create_email_entry, create_or_open_db, create_sender_email_stats_entry,
-        delete_all_sender_email_stats_entries, get_last_fetched_uid, read_emails_from_database,
-        read_sender_email_stats,
-    },
-    types::Email,
-};
+use crate::{SendersArgs, SortBy, database::DatabaseManager, types::Email};
 
 /// Retrieves email credentials from env vars.
 /// You can set it in current shell or .bashrc as below.
@@ -128,7 +120,8 @@ fn format_address(address: &Address) -> String {
 }
 
 pub async fn sync_emails() -> anyhow::Result<()> {
-    let conn = create_or_open_db("emailyzer.db").await?;
+    // let conn = create_or_open_db("emailyzer.db").await?;
+    let db_manager = DatabaseManager::new("emailyzer.db").await?;
 
     // Gmail IMAP server.
     let domain = "imap.gmail.com";
@@ -138,8 +131,6 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
     let client = get_client(domain, port).await?;
     info!("Connected successfully.");
-
-    let _last_uid = get_last_fetched_uid(&conn).await?;
 
     info!("Authenticating...");
     let mut session = get_session(&username, &password, client).await?;
@@ -194,7 +185,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
             body: "".to_string(),
         };
 
-        create_email_entry(&conn, email).await?;
+        db_manager.create_email_entry(email).await?;
     }
 
     session.logout()?;
@@ -205,7 +196,8 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 }
 
 pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
-    let conn = create_or_open_db("emailyzer.db").await?;
+    // let conn = create_or_open_db("emailyzer.db").await?;
+    let db_manager = DatabaseManager::new("emailyzer.db").await?;
 
     // Prepare table for display
     let mut table = Table::new();
@@ -227,7 +219,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
-        let emails: Vec<Email> = read_emails_from_database(&conn).await?;
+        let emails: Vec<Email> = db_manager.read_emails_from_database().await?;
         info!("Fetched {} emails from database", emails.len());
 
         // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
@@ -251,20 +243,20 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         }
 
         // Clear database table first to make fresh entries
-        delete_all_sender_email_stats_entries(&conn).await?;
+        db_manager.delete_all_sender_email_stats_entries().await?;
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (sender, count) in senders {
-            create_sender_email_stats_entry(
-                &conn,
-                sender.clone(),
-                count.0,
-                count.1,
-                count.2,
-                count.3,
-                count.4,
-            )
-            .await?;
+            db_manager
+                .create_sender_email_stats_entry(
+                    sender.clone(),
+                    count.0,
+                    count.1,
+                    count.2,
+                    count.3,
+                    count.4,
+                )
+                .await?;
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
@@ -273,7 +265,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
-        let senders_stats = read_sender_email_stats(&conn).await?;
+        let senders_stats = db_manager.read_sender_email_stats().await?;
 
         if senders_stats.is_empty() {
             info!(
