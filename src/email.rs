@@ -146,18 +146,6 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
     let _mailbox = session.examine("INBOX")?;
 
-    // let uid_next = mailbox.uid_next.unwrap_or(0);
-
-    // println!("Messages in INBOX: {}", mailbox.exists);
-    // println!("Next UID: {}", uid_next);
-    // println!("Last UID in DB: {}", last_uid);
-
-    // println!("INBOX opened in read-only mode.");
-    // println!("Messages: {}", mailbox.exists);
-    // println!("Recent messages: {}", mailbox.recent);
-    // println!("Next UID: {}", mailbox.uid_next.unwrap_or(0));
-
-    // let messages = session.uid_fetch(format!("{}:*", last_uid + 1), "(UID FLAGS ENVELOPE)")?;
     let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
 
     info!("Fetching {} messages", messages.len());
@@ -337,4 +325,15 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
     println!("{table}");
 
     Ok(())
+}
+
+/// Returns a list of labels from the email account. Ex. INBOX, Drafts, Sent mails etc
+async fn _get_mailboxes(
+    session: &mut Session<TlsStream<TcpStream>>,
+) -> anyhow::Result<Vec<String>> {
+    let mailboxes = session.list(None, Some("*"))?;
+
+    let mailbox_names = mailboxes.iter().map(|m| m.name().to_string()).collect();
+
+    Ok(mailbox_names)
 }

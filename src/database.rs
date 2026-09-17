@@ -24,7 +24,8 @@ pub async fn create_or_open_db<P: AsRef<Path>>(path: P) -> anyhow::Result<Connec
             read_status bool,
             has_attachment bool NOT NULL,
             timestamp TEXT NOT NULL,
-            body TEXT
+            body TEXT,
+            label TEXT DEFAULT 'INBOX'
         )",
             (),
         )?;
