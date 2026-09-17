@@ -2,8 +2,9 @@ use std::{collections::HashMap, net::TcpStream};
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use imap::{Client, Session, types::Fetch};
+use mailparse::MailHeaderMap;
 use native_tls::{TlsConnector, TlsStream};
-use tokio_imap::types::{Address, BodyContentCommon, BodyStructure, Envelope};
+use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
 use crate::{
@@ -99,26 +100,16 @@ pub fn is_seen(message: &Fetch) -> bool {
     message.flags().contains(&imap::types::Flag::Seen)
 }
 
-// Check if email has an attachment by inspecting its BODYSTRUCTURE
-pub fn has_attachment(body_structure: &BodyStructure) -> bool {
-    match body_structure {
-        BodyStructure::Multipart { common, bodies, .. } => {
-            is_attachment_disposition(common) || bodies.iter().any(has_attachment)
-        }
-        BodyStructure::Basic { common, .. } => is_attachment_disposition(common),
-        BodyStructure::Text { common, .. } => is_attachment_disposition(common),
-        BodyStructure::Message { common, body, .. } => {
-            is_attachment_disposition(common) || has_attachment(body)
-        }
-    }
-}
+/// Check if a parsed raw message (via `mailparse`) has an attachment by inspecting the
+/// Content-Disposition header of the message itself and all of its subparts.
+fn mail_has_attachment(parsed: &mailparse::ParsedMail) -> bool {
+    let is_attachment = parsed
+        .get_headers()
+        .get_first_value("Content-Disposition")
+        .map(|value| value.to_lowercase().starts_with("attachment"))
+        .unwrap_or(false);
 
-/// Check if a body part's content-disposition indicates it is an attachment
-fn is_attachment_disposition(common: &BodyContentCommon) -> bool {
-    common
-        .disposition
-        .as_ref()
-        .is_some_and(|disposition| disposition.ty.eq_ignore_ascii_case("attachment"))
+    is_attachment || parsed.subparts.iter().any(mail_has_attachment)
 }
 
 /// Format email address
@@ -171,7 +162,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
     info!("Fetching {} messages", messages.len());
 
-    for message in messages.iter().take(100) {
+    for message in &messages {
         // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
         let uid = message.uid.unwrap_or(0);
 
@@ -183,20 +174,20 @@ pub async fn sync_emails() -> anyhow::Result<()> {
         let receiver = get_receiver(envelope);
         let datetime = get_datetime(envelope);
 
-        // TODO: Try the way mentioned at the end of this file.
-        // Fetch BODYSTRUCTURE per-message (rather than batching it with the rest) so that a
-        // single message with a structure the parser chokes on (a known imap-proto limitation
-        // with some of Gmail's BODYSTRUCTURE responses) doesn't fail the entire batch fetch.
-        let has_attachment = match session.uid_fetch(uid.to_string(), "BODYSTRUCTURE") {
-            Ok(bs_messages) => bs_messages
+        // Fetch the raw message body (rather than relying on imap-proto's BODYSTRUCTURE parser,
+        // which chokes on some of Gmail's responses) and parse it with `mailparse` to check for
+        // attachments. This avoids the "Unable to parse status response" / broken pipe issues.
+        let has_attachment = match session.uid_fetch(uid.to_string(), "BODY.PEEK[]") {
+            Ok(body_messages) => body_messages
                 .iter()
                 .next()
-                .and_then(|m| m.bodystructure())
-                .map(has_attachment)
+                .and_then(|m| m.body())
+                .and_then(|body| mailparse::parse_mail(body).ok())
+                .map(|parsed| mail_has_attachment(&parsed))
                 .unwrap_or(false),
             Err(error) => {
                 tracing::warn!(
-                    "Failed to fetch/parse BODYSTRUCTURE for UID {}: {}. Assuming no attachment.",
+                    "Failed to fetch/parse body for UID {}: {}. Assuming no attachment.",
                     uid,
                     error
                 );
@@ -347,23 +338,3 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     Ok(())
 }
-
-// let messages = session.uid_fetch(
-//     uid.to_string(),
-//     "(UID BODY.PEEK[])"
-// )?;
-
-// for message in messages.iter() {
-//     if let Some(body) = message.body() {
-//         let parsed = mailparse::parse_mail(body)?;
-
-//         let has_attachment = parsed.subparts.iter().any(|part| {
-//             part.get_headers()
-//                 .get_first_value("Content-Disposition")
-//                 .map(|v| v.to_lowercase().starts_with("attachment"))
-//                 .unwrap_or(false)
-//         });
-
-//         println!("Has attachment: {}", has_attachment);
-//     }
-// }
