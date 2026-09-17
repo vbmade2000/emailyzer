@@ -7,7 +7,11 @@ use native_tls::{TlsConnector, TlsStream};
 use tokio_imap::types::{Address, Envelope};
 use tracing::info;
 
-use crate::{SendersArgs, SortBy, database::DatabaseManager, types::Email};
+use crate::{
+    SendersArgs, SortBy,
+    database::DatabaseManager,
+    types::{Email, SenderStats},
+};
 
 /// Retrieves email credentials from env vars.
 /// You can set it in current shell or .bashrc as below.
@@ -215,7 +219,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
     let preferred_senders = sendersargs.sender;
 
     // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
-    let mut rows: Vec<(String, u32, u32, u32, u32, u32)> = Vec::new();
+    let mut rows: Vec<SenderStats> = Vec::new();
 
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
@@ -223,22 +227,24 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         info!("Fetched {} emails from database", emails.len());
 
         // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
-        let mut senders: HashMap<String, (u32, u32, u32, u32, u32)> = HashMap::new();
+        let mut senders: HashMap<String, SenderStats> = HashMap::new();
 
         // Count emails sent by each unique sender
         for email in emails {
-            let count = senders.entry(email.sender).or_insert((0, 0, 0, 0, 0));
-            count.0 += 1;
+            let sender_stat = senders.entry(email.sender).or_default();
+
+            sender_stat.total_emails += 1;
+
             if email.read_status {
-                count.1 += 1;
+                sender_stat.read_emails += 1;
             } else {
-                count.2 += 1;
+                sender_stat.unread_emails += 1;
             }
 
             if email.attachment {
-                count.3 += 1;
+                sender_stat.attachment_count += 1;
             } else {
-                count.4 += 1;
+                sender_stat.no_attachment_count += 1;
             }
         }
 
@@ -246,22 +252,23 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         db_manager.delete_all_sender_email_stats_entries().await?;
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
-        for (sender, count) in senders {
+        for (sender, stats) in senders {
             db_manager
                 .create_sender_email_stats_entry(
                     sender.clone(),
-                    count.0,
-                    count.1,
-                    count.2,
-                    count.3,
-                    count.4,
+                    stats.total_emails,
+                    stats.read_emails,
+                    stats.unread_emails,
+                    stats.attachment_count,
+                    stats.no_attachment_count,
                 )
                 .await?;
+
             // We show only records from preferred senders if user has passed --sender flag
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
-            rows.push((sender, count.0, count.1, count.2, count.3, count.4));
+            rows.push(stats);
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
@@ -274,43 +281,36 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        for (sender, count, read, unread, with_attachment, without_attachment) in senders_stats {
+        for sender_stat in senders_stats {
             // We show only records from preferred senders if user has passed --sender flag
-            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
+            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender_stat.sender) {
                 continue;
             }
-            rows.push((
-                sender,
-                count,
-                read,
-                unread,
-                with_attachment,
-                without_attachment,
-            ));
+            rows.push(sender_stat);
         }
     }
 
     // Sort the rows based on --sort-by flag, if provided
     match sendersargs.sort_by {
-        Some(SortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.1)),
-        Some(SortBy::Sender) => rows.sort_by(|a, b| a.0.cmp(&b.0)),
+        Some(SortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
+        Some(SortBy::Sender) => rows.sort_by(|a, b| a.sender.cmp(&b.sender)),
         None => {}
     }
 
     // Show top N senders by no of emails if user has passed --top flag
     if let Some(top) = sendersargs.top {
-        rows.sort_by_key(|b| std::cmp::Reverse(b.1));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
         rows.truncate(top as usize);
     }
 
-    for (sender, count, read, unread, with_attachment, without_attachment) in rows {
+    for sender_stat in rows {
         table.add_row(vec![
-            sender,
-            count.to_string(),
-            read.to_string(),
-            unread.to_string(),
-            with_attachment.to_string(),
-            without_attachment.to_string(),
+            sender_stat.sender,
+            sender_stat.total_emails.to_string(),
+            sender_stat.read_emails.to_string(),
+            sender_stat.unread_emails.to_string(),
+            sender_stat.attachment_count.to_string(),
+            sender_stat.no_attachment_count.to_string(),
         ]);
     }
 

@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use tracing::{debug, info};
 
-use crate::types::Email;
+use crate::types::{Email, SenderStats};
 
 pub struct DatabaseManager {
     conn: Connection,
@@ -185,28 +185,27 @@ impl DatabaseManager {
     }
 
     /// Read sender email stats from "sender_email_stats" database table
-    pub async fn read_sender_email_stats(
-        &self,
-    ) -> anyhow::Result<Vec<(String, u32, u32, u32, u32, u32)>> {
+    pub async fn read_sender_email_stats(&self) -> anyhow::Result<Vec<SenderStats>> {
         let mut stmt = self.conn.prepare(
             "SELECT sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count FROM sender_email_stats",
         )?;
-        let senders: Vec<(String, u32, u32, u32, u32, u32)> = stmt
+
+        let senders: Vec<SenderStats> = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
+                Ok(SenderStats {
+                    sender: row.get(0)?,
+                    total_emails: row.get(1)?,
+                    read_emails: row.get(2)?,
+                    unread_emails: row.get(3)?,
+                    attachment_count: row.get(4)?,
+                    no_attachment_count: row.get(5)?,
+                })
             })?
             .map(|row| match row {
-                Ok(r) => (r.0, r.1, r.2, r.3, r.4, r.5),
+                Ok(r) => r,
                 Err(e) => {
                     tracing::error!("Error while reading sender email stats: {}", e);
-                    ("".to_string(), 0, 0, 0, 0, 0)
+                    SenderStats::default()
                 }
             })
             .collect();
