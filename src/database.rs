@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::types::{Email, SenderStats};
 use sqlx::{
     Row as _,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool},
+    sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
 };
 use tracing::{debug, info};
 
@@ -15,19 +15,19 @@ impl DatabaseManager {
     /// Creates and returns a new instance of DatabaseManager.
     pub async fn new<P: AsRef<str>>(path: P) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::from_str(format!("sqlite://{}", path.as_ref()).as_str())?
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal);
+            .create_if_missing(true);
 
-        // let conn = Connection::open(&path)?;
-        let pool = SqlitePool::connect_with(opts).await?;
+        // Only one connection is ever needed: DatabaseManager is used exclusively from a single
+        // writer task. Capping the pool at 1 avoids multiple physical SQLite connections racing
+        // on the WAL file, which can otherwise trigger "disk I/O error" (SQLITE_IOERR_SHORT_READ).
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await?;
         info!(
             "Connection to the SQLite database {} successfully established",
             path.as_ref()
         );
-
-        // Run migrations automatically
-        sqlx::migrate!("./migrations").run(&pool).await?;
-        info!("Database migrations applied successfully");
 
         // Run pending migrations embedded from the "migrations" directory at compile time.
         sqlx::migrate!("./migrations").run(&pool).await?;

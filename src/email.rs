@@ -4,13 +4,14 @@ use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use imap::{Client, Session, types::Fetch};
 use mailparse::MailHeaderMap;
 use native_tls::{TlsConnector, TlsStream};
+use tokio::{sync::mpsc::channel, task::JoinHandle};
 use tokio_imap::types::{Address, Envelope};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     SendersArgs, SortBy,
     database::DatabaseManager,
-    types::{Email, SenderStats},
+    types::{DatabaseOperations, Email, SenderStats},
 };
 
 /// Retrieves email credentials from env vars.
@@ -125,7 +126,33 @@ fn format_address(address: &Address) -> String {
 
 /// Fetches emails from the provider and stores in database
 pub async fn sync_emails() -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new("emailyzer.db").await?;
+    // Channel to send database operations to database writer task.
+    // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
+    // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
+    // so buffer size of 100 is more than enough.
+    let (db_sender, mut db_receiver) = channel(100);
+    let db_task: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+        info!("Spawning database writer task");
+        let db_manager = DatabaseManager::new("emailyzer.db").await?;
+
+        info!("Waiting for database write commands");
+        while let Some(command) = db_receiver.recv().await {
+            match command {
+                DatabaseOperations::CreateEmailEntry(email) => {
+                    debug!("DatabaseWriter: Creating email entry in database");
+                    db_manager.create_email_entry(email).await?;
+                }
+                DatabaseOperations::Exit => {
+                    info!("DatabaseWriter: Exit command received");
+                    break;
+                }
+            }
+        }
+
+        info!("Stopping database writer task");
+
+        Ok::<(), anyhow::Error>(())
+    });
 
     // Gmail IMAP server.
     let domain = "imap.gmail.com";
@@ -189,8 +216,26 @@ pub async fn sync_emails() -> anyhow::Result<()> {
             body: "".to_string(),
         };
 
-        db_manager.create_email_entry(email).await?;
+        if db_sender
+            .send(DatabaseOperations::CreateEmailEntry(email))
+            .await
+            .is_err()
+        {
+            // The receiver was dropped, which means the database writer task already exited
+            // (most likely due to an error). Await it now to surface the real underlying error
+            // instead of the generic "channel closed" message.
+            db_task.await??;
+            anyhow::bail!("Database writer task exited unexpectedly");
+        }
     }
+
+    // Only send Exit if the writer task is still alive; ignore error here since the task may
+    // have already stopped, in which case db_task.await below will surface the real error.
+    let _ = db_sender.send(DatabaseOperations::Exit).await;
+
+    // Ensure the database writer task has finished flushing all writes before returning,
+    // and propagate any error it encountered.
+    db_task.await??;
 
     session.logout()?;
 

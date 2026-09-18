@@ -21,3 +21,9 @@ pub struct SenderStats {
     pub attachment_count: u32,
     pub no_attachment_count: u32,
 }
+
+/// Database operations
+pub enum DatabaseOperations {
+    CreateEmailEntry(Email),
+    Exit,
+}
