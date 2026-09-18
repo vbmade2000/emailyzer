@@ -123,8 +123,8 @@ fn format_address(address: &Address) -> String {
     format!("{mailbox}@{host}")
 }
 
+/// Fetches emails from the provider and stores in database
 pub async fn sync_emails() -> anyhow::Result<()> {
-    // let conn = create_or_open_db("emailyzer.db").await?;
     let db_manager = DatabaseManager::new("emailyzer.db").await?;
 
     // Gmail IMAP server.
@@ -231,7 +231,8 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
         // Count emails sent by each unique sender
         for email in emails {
-            let sender_stat = senders.entry(email.sender).or_default();
+            let sender_stat = senders.entry(email.sender.clone()).or_default();
+            sender_stat.sender = email.sender;
 
             sender_stat.total_emails += 1;
 
@@ -268,6 +269,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
                 continue;
             }
+
             rows.push(stats);
         }
     } else {

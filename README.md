@@ -5,6 +5,8 @@ Simple yet effective email analyzer
 ```
 $ sudo apt update 
 $ sudo apt install pkg-config libssl-dev libsqlite3-dev
+$ cargo install sqlx-cli --no-default-features --features native-tls,sqlite
+
 ```
 
 ## Export Gmail credentials
@@ -18,6 +20,13 @@ $ export GMAIL_PWD="your-temporary-gmail-app-password"
 $ git clone https://github.com/vbmade2000/emailyzer.git
 $ cd emailyzer
 $ cargo build --release
+```
+
+## Database migrations
+Database migrations are automatically applied when you run the application for the first time. If you want to add a new migration, run the following commands:
+```
+$ sqlx migrate add -r <migration-name>
+$ sqlx migrate run
 ```
 
 ## Change the log level for application

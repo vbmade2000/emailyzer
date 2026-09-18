@@ -1,4 +1,5 @@
 /// Represents an email message
+#[derive(Debug)]
 pub struct Email {
     pub uid: u32,
     pub subject: String,
@@ -11,7 +12,7 @@ pub struct Email {
 }
 
 /// Represents sender email stats for a single sender
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SenderStats {
     pub sender: String,
     pub total_emails: u32,
