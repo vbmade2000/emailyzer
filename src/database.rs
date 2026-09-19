@@ -7,27 +7,46 @@ use sqlx::{
 };
 use tracing::{debug, info};
 
+/// Where a `DatabaseManager` should open its SQLite connection.
+pub enum DatabaseLocation<'a> {
+    /// A database file on disk at the given path.
+    File(&'a str),
+    /// An in-memory database, useful for unit tests: it's isolated per-instance, requires no
+    /// filesystem access/cleanup, and disappears once the `DatabaseManager` (and its pool) is
+    /// dropped.
+    #[cfg(test)]
+    Memory,
+}
+
 pub struct DatabaseManager {
     conn: SqlitePool,
 }
 
 impl DatabaseManager {
-    /// Creates and returns a new instance of DatabaseManager.
-    pub async fn new<P: AsRef<str>>(path: P) -> anyhow::Result<Self> {
-        let opts = SqliteConnectOptions::from_str(format!("sqlite://{}", path.as_ref()).as_str())?
-            .create_if_missing(true);
+    /// Creates and returns a new instance of DatabaseManager, connecting according to `location`
+    /// and running pending migrations.
+    pub async fn new(location: DatabaseLocation<'_>) -> anyhow::Result<Self> {
+        let (opts, description) = match location {
+            DatabaseLocation::File(path) => (
+                SqliteConnectOptions::from_str(format!("sqlite://{path}").as_str())?
+                    .create_if_missing(true),
+                format!("SQLite database {path}"),
+            ),
+            #[cfg(test)]
+            DatabaseLocation::Memory => (
+                SqliteConnectOptions::from_str("sqlite::memory:")?,
+                "in-memory SQLite database".to_string(),
+            ),
+        };
 
         // Only one connection is ever needed: DatabaseManager is used exclusively from a single
-        // writer task. Capping the pool at 1 avoids multiple physical SQLite connections racing
-        // on the WAL file, which can otherwise trigger "disk I/O error" (SQLITE_IOERR_SHORT_READ).
+        // writer task. For an in-memory database, capping at 1 is required anyway: each connection would
+        // otherwise get its own separate, empty in-memory database.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
             .await?;
-        info!(
-            "Connection to the SQLite database {} successfully established",
-            path.as_ref()
-        );
+        info!("Connection to the {} successfully established", description);
 
         // Run pending migrations embedded from the "migrations" directory at compile time.
         sqlx::migrate!("./migrations").run(&pool).await?;

@@ -10,7 +10,7 @@ use tracing::{debug, info};
 
 use crate::{
     SendersArgs, SortBy,
-    database::DatabaseManager,
+    database::{DatabaseLocation, DatabaseManager},
     types::{DATABASE_URL, DatabaseOperations, Email, SenderStats},
 };
 
@@ -142,7 +142,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
         let password = password.clone();
         tokio::spawn(async move {
             info!("Spawning database writer task");
-            let db_manager = DatabaseManager::new(DATABASE_URL).await?;
+            let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
 
             // A second, independent connection to Gmail dedicated to fetching bodies (for
             // attachment detection). This runs concurrently with the main loop's session, which
@@ -266,7 +266,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 }
 
 pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new(DATABASE_URL).await?;
+    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
 
     // Prepare table for display
     let mut table = Table::new();
