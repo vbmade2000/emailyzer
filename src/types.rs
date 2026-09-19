@@ -27,3 +27,6 @@ pub enum DatabaseOperations {
     CreateEmailEntry(Email),
     Exit,
 }
+
+//Contants
+pub const DATABASE_URL: &str = "emailyzer.db";

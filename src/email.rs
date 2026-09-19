@@ -11,7 +11,7 @@ use tracing::{debug, info};
 use crate::{
     SendersArgs, SortBy,
     database::DatabaseManager,
-    types::{DatabaseOperations, Email, SenderStats},
+    types::{DATABASE_URL, DatabaseOperations, Email, SenderStats},
 };
 
 /// Retrieves email credentials from env vars.
@@ -55,7 +55,7 @@ pub async fn get_session(
 }
 
 /// Extract subject field from envelope
-pub async fn get_subject(envelope: &Envelope<'_>) -> String {
+pub fn get_subject(envelope: &Envelope<'_>) -> String {
     envelope
         .subject
         .and_then(|subject| std::str::from_utf8(subject).ok())
@@ -64,7 +64,7 @@ pub async fn get_subject(envelope: &Envelope<'_>) -> String {
 }
 
 // Extract sender/from field from envelope
-pub async fn get_sender(envelope: &Envelope<'_>) -> String {
+pub fn get_sender(envelope: &Envelope<'_>) -> String {
     envelope
         .from
         .as_ref()
@@ -133,7 +133,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     let (db_sender, mut db_receiver) = channel(100);
     let db_task: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         info!("Spawning database writer task");
-        let db_manager = DatabaseManager::new("emailyzer.db").await?;
+        let db_manager = DatabaseManager::new(DATABASE_URL).await?;
 
         info!("Waiting for database write commands");
         while let Some(command) = db_receiver.recv().await {
@@ -177,10 +177,18 @@ pub async fn sync_emails() -> anyhow::Result<()> {
         let uid = message.uid.unwrap_or(0);
 
         // Extract fields
-        let envelope = message.envelope().expect("Server did not return ENVELOPE");
+        let envelope = message.envelope();
+
+        // This is an edge case. There may be an email for which the envelope would not be retreieved.
+        if envelope.is_none() {
+            tracing::warn!("Envelope is None for UID {}, skipping", uid);
+            continue;
+        }
+
+        let envelope = envelope.as_ref().unwrap();
         let is_seen = is_seen(message);
-        let subject = get_subject(envelope).await;
-        let sender = get_sender(envelope).await;
+        let subject = get_subject(envelope);
+        let sender = get_sender(envelope);
         let receiver = get_receiver(envelope);
         let datetime = get_datetime(envelope);
 
@@ -245,8 +253,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 }
 
 pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
-    // let conn = create_or_open_db("emailyzer.db").await?;
-    let db_manager = DatabaseManager::new("emailyzer.db").await?;
+    let db_manager = DatabaseManager::new(DATABASE_URL).await?;
 
     // Prepare table for display
     let mut table = Table::new();
@@ -263,7 +270,6 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     let preferred_senders = sendersargs.sender;
 
-    // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
     let mut rows: Vec<SenderStats> = Vec::new();
 
     if sendersargs.refresh {
@@ -271,7 +277,6 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         let emails: Vec<Email> = db_manager.read_emails_from_database().await?;
         info!("Fetched {} emails from database", emails.len());
 
-        // (sender, emails, read-emails, unread-emails, email_with_attachment, email_without_attachment)
         let mut senders: HashMap<String, SenderStats> = HashMap::new();
 
         // Count emails sent by each unique sender
@@ -337,16 +342,21 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Sort the rows based on --sort-by flag, if provided
+    // Sort the rows based on --sort-by flag, if provided. If --sort-by is absent but --top is
+    // present, default to sorting by emails so "top N" has a well-defined meaning (highest
+    // email counts first).
     match sendersargs.sort_by {
         Some(SortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
         Some(SortBy::Sender) => rows.sort_by(|a, b| a.sender.cmp(&b.sender)),
-        None => {}
+        None => {
+            if sendersargs.top.is_some() {
+                rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
+            }
+        }
     }
 
-    // Show top N senders by no of emails if user has passed --top flag
+    // Show only the top N rows (in whatever order was established above) if --top was passed.
     if let Some(top) = sendersargs.top {
-        rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
         rows.truncate(top as usize);
     }
 
@@ -412,45 +422,45 @@ mod tests {
 
     // get_subject -----------------------------------------------------------
 
-    #[tokio::test]
-    async fn get_subject_returns_subject_when_present() {
+    #[test]
+    fn get_subject_returns_subject_when_present() {
         let envelope = make_envelope(Some(b"Hello world"), None, None, None);
-        assert_eq!(get_subject(&envelope).await, "Hello world");
+        assert_eq!(get_subject(&envelope), "Hello world");
     }
 
-    #[tokio::test]
-    async fn get_subject_returns_placeholder_when_missing() {
+    #[test]
+    fn get_subject_returns_placeholder_when_missing() {
         let envelope = make_envelope(None, None, None, None);
-        assert_eq!(get_subject(&envelope).await, "<no subject>");
+        assert_eq!(get_subject(&envelope), "<no subject>");
     }
 
-    #[tokio::test]
-    async fn get_subject_returns_placeholder_on_invalid_utf8() {
+    #[test]
+    fn get_subject_returns_placeholder_on_invalid_utf8() {
         let envelope = make_envelope(Some(&[0xff, 0xfe]), None, None, None);
-        assert_eq!(get_subject(&envelope).await, "<no subject>");
+        assert_eq!(get_subject(&envelope), "<no subject>");
     }
 
-    #[tokio::test]
-    async fn get_subject_returns_empty_string_when_subject_is_empty() {
+    #[test]
+    fn get_subject_returns_empty_string_when_subject_is_empty() {
         let envelope = make_envelope(Some(b""), None, None, None);
-        assert_eq!(get_subject(&envelope).await, "");
+        assert_eq!(get_subject(&envelope), "");
     }
 
     // get_sender ------------------------------------------------------------
 
-    #[tokio::test]
-    async fn get_sender_returns_formatted_address() {
+    #[test]
+    fn get_sender_returns_formatted_address() {
         let envelope = make_envelope(
             None,
             Some(vec![make_address(Some(b"malhar"), Some(b"example.com"))]),
             None,
             None,
         );
-        assert_eq!(get_sender(&envelope).await, "malhar@example.com");
+        assert_eq!(get_sender(&envelope), "malhar@example.com");
     }
 
-    #[tokio::test]
-    async fn get_sender_uses_first_address_only() {
+    #[test]
+    fn get_sender_uses_first_address_only() {
         let envelope = make_envelope(
             None,
             Some(vec![
@@ -460,36 +470,36 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(get_sender(&envelope).await, "malhar@example.com");
+        assert_eq!(get_sender(&envelope), "malhar@example.com");
     }
 
-    #[tokio::test]
-    async fn get_sender_returns_placeholder_when_missing() {
+    #[test]
+    fn get_sender_returns_placeholder_when_missing() {
         let envelope = make_envelope(None, None, None, None);
-        assert_eq!(get_sender(&envelope).await, "<unknown sender>");
+        assert_eq!(get_sender(&envelope), "<unknown sender>");
     }
 
-    #[tokio::test]
-    async fn get_sender_returns_placeholder_when_from_is_empty() {
+    #[test]
+    fn get_sender_returns_placeholder_when_from_is_empty() {
         let envelope = make_envelope(None, Some(vec![]), None, None);
-        assert_eq!(get_sender(&envelope).await, "<unknown sender>");
+        assert_eq!(get_sender(&envelope), "<unknown sender>");
     }
 
-    #[tokio::test]
-    async fn get_sender_handles_missing_mailbox_and_host() {
+    #[test]
+    fn get_sender_handles_missing_mailbox_and_host() {
         let envelope = make_envelope(None, Some(vec![make_address(None, None)]), None, None);
-        assert_eq!(get_sender(&envelope).await, "<unknown>@<unknown>");
+        assert_eq!(get_sender(&envelope), "<unknown>@<unknown>");
     }
 
-    #[tokio::test]
-    async fn get_sender_handles_invalid_utf8() {
+    #[test]
+    fn get_sender_handles_invalid_utf8() {
         let envelope = make_envelope(
             None,
             Some(vec![make_address(Some(&[0xff]), Some(&[0xfe]))]),
             None,
             None,
         );
-        assert_eq!(get_sender(&envelope).await, "<unknown>@<unknown>");
+        assert_eq!(get_sender(&envelope), "<unknown>@<unknown>");
     }
 
     // get_receiver ----------------------------------------------------------

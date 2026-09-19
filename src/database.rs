@@ -36,20 +36,18 @@ impl DatabaseManager {
         Ok(DatabaseManager { conn: pool })
     }
 
-    /// Create an entry in "emails" database table
+    /// Create an entry in "emails" database table.
+    ///
+    /// Uses `INSERT OR IGNORE` instead of a separate existence check followed by an insert,
+    /// folding what used to be two round-trips (SELECT + INSERT) into one.
     pub async fn create_email_entry(&self, email: Email) -> anyhow::Result<()> {
         let uid = email.uid;
 
-        if self.uid_exists(uid).await? {
-            debug!("Email with UID {} already exists, skipping", uid);
-            return Ok(());
-        }
-
         let mut conn = self.conn.acquire().await?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
-                INSERT INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                INSERT OR IGNORE INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#
         )
         .bind(uid)
@@ -61,6 +59,10 @@ impl DatabaseManager {
         .bind(email.timestamp)
         .bind(email.body)
         .execute(&mut *conn).await?;
+
+        if result.rows_affected() == 0 {
+            debug!("Email with UID {} already exists, skipping", uid);
+        }
 
         Ok(())
     }
@@ -112,18 +114,6 @@ impl DatabaseManager {
             .await?;
 
         Ok(last_uid)
-    }
-
-    /// Check if email with given UID already exists in "emails" database table
-    pub async fn uid_exists(&self, uid: u32) -> anyhow::Result<bool> {
-        let mut conn = self.conn.acquire().await?;
-
-        let email_uid: Option<u32> = sqlx::query_scalar("SELECT uid FROM emails WHERE uid = ?")
-            .bind(uid)
-            .fetch_optional(&mut *conn)
-            .await?;
-
-        Ok(email_uid.is_some())
     }
 
     /// Read all emails from "emails" database table
