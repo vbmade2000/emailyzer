@@ -130,35 +130,69 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
     // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
     // so buffer size of 100 is more than enough.
-    let (db_sender, mut db_receiver) = channel(100);
-    let db_task: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-        info!("Spawning database writer task");
-        let db_manager = DatabaseManager::new(DATABASE_URL).await?;
-
-        info!("Waiting for database write commands");
-        while let Some(command) = db_receiver.recv().await {
-            match command {
-                DatabaseOperations::CreateEmailEntry(email) => {
-                    debug!("DatabaseWriter: Creating email entry in database");
-                    db_manager.create_email_entry(email).await?;
-                }
-                DatabaseOperations::Exit => {
-                    info!("DatabaseWriter: Exit command received");
-                    break;
-                }
-            }
-        }
-
-        info!("Stopping database writer task");
-
-        Ok::<(), anyhow::Error>(())
-    });
-
     // Gmail IMAP server.
     let domain = "imap.gmail.com";
     let port = 993;
 
     let (username, password) = get_credentials().await?;
+
+    let (db_sender, mut db_receiver) = channel(100);
+    let db_task: JoinHandle<anyhow::Result<()>> = {
+        let username = username.clone();
+        let password = password.clone();
+        tokio::spawn(async move {
+            info!("Spawning database writer task");
+            let db_manager = DatabaseManager::new(DATABASE_URL).await?;
+
+            // A second, independent connection to Gmail dedicated to fetching bodies (for
+            // attachment detection). This runs concurrently with the main loop's session, which
+            // only does the lightweight UID/FLAGS/ENVELOPE fetch, instead of a single session
+            // alternating between envelope fetches and per-message body fetches.
+            let body_client = get_client(domain, port).await?;
+            let mut body_session = get_session(&username, &password, body_client).await?;
+            body_session.examine("INBOX")?;
+
+            info!("Waiting for database write commands");
+            while let Some(command) = db_receiver.recv().await {
+                match command {
+                    DatabaseOperations::CreateEmailEntry(mut email) => {
+                        debug!("DatabaseWriter: Fetching body and creating email entry");
+
+                        email.attachment = match body_session
+                            .uid_fetch(email.uid.to_string(), "BODY.PEEK[]")
+                        {
+                            Ok(body_messages) => body_messages
+                                .iter()
+                                .next()
+                                .and_then(|m| m.body())
+                                .and_then(|body| mailparse::parse_mail(body).ok())
+                                .map(|parsed| mail_has_attachment(&parsed))
+                                .unwrap_or(false),
+                            Err(error) => {
+                                tracing::warn!(
+                                    "Failed to fetch/parse body for UID {}: {}. Assuming no attachment.",
+                                    email.uid,
+                                    error
+                                );
+                                false
+                            }
+                        };
+
+                        db_manager.create_email_entry(email).await?;
+                    }
+                    DatabaseOperations::Exit => {
+                        info!("DatabaseWriter: Exit command received");
+                        break;
+                    }
+                }
+            }
+
+            body_session.logout()?;
+            info!("Stopping database writer task");
+
+            Ok::<(), anyhow::Error>(())
+        })
+    };
 
     let client = get_client(domain, port).await?;
     info!("Connected successfully.");
@@ -187,40 +221,19 @@ pub async fn sync_emails() -> anyhow::Result<()> {
 
         let envelope = envelope.as_ref().unwrap();
         let is_seen = is_seen(message);
-        let subject = get_subject(envelope);
-        let sender = get_sender(envelope);
-        let receiver = get_receiver(envelope);
-        let datetime = get_datetime(envelope);
 
-        // Fetch the raw message body (rather than relying on imap-proto's BODYSTRUCTURE parser,
-        // which chokes on some of Gmail's responses) and parse it with `mailparse` to check for
-        // attachments. This avoids the "Unable to parse status response" / broken pipe issues.
-        let has_attachment = match session.uid_fetch(uid.to_string(), "BODY.PEEK[]") {
-            Ok(body_messages) => body_messages
-                .iter()
-                .next()
-                .and_then(|m| m.body())
-                .and_then(|body| mailparse::parse_mail(body).ok())
-                .map(|parsed| mail_has_attachment(&parsed))
-                .unwrap_or(false),
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to fetch/parse body for UID {}: {}. Assuming no attachment.",
-                    uid,
-                    error
-                );
-                false
-            }
-        };
-
+        // Body fetching/attachment detection is done by the database writer task over its own
+        // IMAP connection, so it can run concurrently with this envelope-fetch loop instead of
+        // this loop alternating between envelope fetches and per-message body fetches.
+        // `attachment` is a placeholder here; the writer task fills in the real value.
         let email = Email {
             uid,
-            subject,
-            sender,
+            subject: get_subject(envelope),
+            sender: get_sender(envelope),
             read_status: is_seen,
-            receiver,
-            attachment: has_attachment,
-            timestamp: datetime,
+            receiver: get_receiver(envelope),
+            attachment: false,
+            timestamp: get_datetime(envelope),
             body: "".to_string(),
         };
 
