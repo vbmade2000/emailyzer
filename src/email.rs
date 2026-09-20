@@ -124,6 +124,73 @@ fn format_address(address: &Address) -> String {
     format!("{mailbox}@{host}")
 }
 
+/// Spawns the database writer task.
+///
+/// The task owns its own, independent IMAP connection (dedicated to fetching bodies for
+/// attachment detection), separate from the caller's session. This lets body fetches happen
+/// concurrently with the caller's envelope-fetch loop, instead of a single session alternating
+/// between envelope fetches and per-message body fetches.
+///
+/// Receives `Email`s (with `attachment` left as a placeholder) over `db_receiver`, fetches each
+/// one's body to determine the real attachment status, and writes the result to the database.
+/// Exits when `DatabaseOperations::Exit` is received or the channel is closed.
+fn spawn_db_writer_task(
+    domain: &'static str,
+    port: u16,
+    username: String,
+    password: String,
+    mut db_receiver: tokio::sync::mpsc::Receiver<DatabaseOperations>,
+) -> JoinHandle<anyhow::Result<()>> {
+    tokio::spawn(async move {
+        info!("Spawning database writer task");
+        let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+
+        let body_client = get_client(domain, port).await?;
+        let mut body_session = get_session(&username, &password, body_client).await?;
+        body_session.examine("INBOX")?;
+
+        info!("Waiting for database write commands");
+        while let Some(command) = db_receiver.recv().await {
+            match command {
+                DatabaseOperations::CreateEmailEntry(mut email) => {
+                    debug!("DatabaseWriter: Fetching body and creating email entry");
+
+                    email.attachment = match body_session
+                        .uid_fetch(email.uid.to_string(), "BODY.PEEK[]")
+                    {
+                        Ok(body_messages) => body_messages
+                            .iter()
+                            .next()
+                            .and_then(|m| m.body())
+                            .and_then(|body| mailparse::parse_mail(body).ok())
+                            .map(|parsed| mail_has_attachment(&parsed))
+                            .unwrap_or(false),
+                        Err(error) => {
+                            tracing::warn!(
+                                "Failed to fetch/parse body for UID {}: {}. Assuming no attachment.",
+                                email.uid,
+                                error
+                            );
+                            false
+                        }
+                    };
+
+                    db_manager.create_email_entry(email).await?;
+                }
+                DatabaseOperations::Exit => {
+                    info!("DatabaseWriter: Exit command received");
+                    break;
+                }
+            }
+        }
+
+        body_session.logout()?;
+        info!("Stopping database writer task");
+
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
 /// Fetches emails from the provider and stores in database
 pub async fn sync_emails() -> anyhow::Result<()> {
     // Gmail IMAP server.
@@ -136,63 +203,14 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
     // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
     // so buffer size of 100 is more than enough.
-    let (db_sender, mut db_receiver) = channel(100);
-    let db_task: JoinHandle<anyhow::Result<()>> = {
-        let username = username.clone();
-        let password = password.clone();
-        tokio::spawn(async move {
-            info!("Spawning database writer task");
-            let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
-
-            // A second, independent connection to Gmail dedicated to fetching bodies (for
-            // attachment detection). This runs concurrently with the main loop's session, which
-            // only does the lightweight UID/FLAGS/ENVELOPE fetch, instead of a single session
-            // alternating between envelope fetches and per-message body fetches.
-            let body_client = get_client(domain, port).await?;
-            let mut body_session = get_session(&username, &password, body_client).await?;
-            body_session.examine("INBOX")?;
-
-            info!("Waiting for database write commands");
-            while let Some(command) = db_receiver.recv().await {
-                match command {
-                    DatabaseOperations::CreateEmailEntry(mut email) => {
-                        debug!("DatabaseWriter: Fetching body and creating email entry");
-
-                        email.attachment = match body_session
-                            .uid_fetch(email.uid.to_string(), "BODY.PEEK[]")
-                        {
-                            Ok(body_messages) => body_messages
-                                .iter()
-                                .next()
-                                .and_then(|m| m.body())
-                                .and_then(|body| mailparse::parse_mail(body).ok())
-                                .map(|parsed| mail_has_attachment(&parsed))
-                                .unwrap_or(false),
-                            Err(error) => {
-                                tracing::warn!(
-                                    "Failed to fetch/parse body for UID {}: {}. Assuming no attachment.",
-                                    email.uid,
-                                    error
-                                );
-                                false
-                            }
-                        };
-
-                        db_manager.create_email_entry(email).await?;
-                    }
-                    DatabaseOperations::Exit => {
-                        info!("DatabaseWriter: Exit command received");
-                        break;
-                    }
-                }
-            }
-
-            body_session.logout()?;
-            info!("Stopping database writer task");
-
-            Ok::<(), anyhow::Error>(())
-        })
-    };
+    let (db_sender, db_receiver) = channel(100);
+    let db_task = spawn_db_writer_task(
+        domain,
+        port,
+        username.clone(),
+        password.clone(),
+        db_receiver,
+    );
 
     let client = get_client(domain, port).await?;
     info!("Connected successfully.");
