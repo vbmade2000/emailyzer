@@ -18,7 +18,7 @@ use crate::{
 /// You can set it in current shell or .bashrc as below.
 /// export GMAIL_USERNAME="your-gmail-username"
 /// export GMAIL_PWD="your-gmail-password"
-pub async fn get_credentials() -> anyhow::Result<(String, String)> {
+async fn get_credentials() -> anyhow::Result<(String, String)> {
     info!("Retrieving credentials from env var");
     // IMP: Do NOT hardcode your Gmail password or App Password in source code.
     Ok((
@@ -28,7 +28,7 @@ pub async fn get_credentials() -> anyhow::Result<(String, String)> {
 }
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
-pub async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
+async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
     info!("Building TLS Connector to validate Gmail certificate");
     Ok(TlsConnector::builder().build()?)
 }
@@ -36,14 +36,14 @@ pub async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
 /// Create a client to connect to Gmail
 /// 1. Create instance of TlsConnector
 /// 2. Create an imap client
-pub async fn get_client(domain: &str, port: u16) -> anyhow::Result<Client<TlsStream<TcpStream>>> {
+async fn get_client(domain: &str, port: u16) -> anyhow::Result<Client<TlsStream<TcpStream>>> {
     info!("Creating a client");
     let tls = get_tls_connector().await?;
     Ok(imap::connect((domain, port), domain, &tls)?)
 }
 
 /// Create a session instance
-pub async fn get_session(
+async fn get_session(
     username: &str,
     password: &str,
     client: Client<TlsStream<TcpStream>>,
@@ -55,7 +55,7 @@ pub async fn get_session(
 }
 
 /// Extract subject field from envelope
-pub fn get_subject(envelope: &Envelope<'_>) -> String {
+fn get_subject(envelope: &Envelope<'_>) -> String {
     envelope
         .subject
         .and_then(|subject| std::str::from_utf8(subject).ok())
@@ -63,8 +63,8 @@ pub fn get_subject(envelope: &Envelope<'_>) -> String {
         .to_string()
 }
 
-// Extract sender/from field from envelope
-pub fn get_sender(envelope: &Envelope<'_>) -> String {
+/// Extract sender/from field from envelope
+fn get_sender(envelope: &Envelope<'_>) -> String {
     envelope
         .from
         .as_ref()
@@ -74,7 +74,7 @@ pub fn get_sender(envelope: &Envelope<'_>) -> String {
 }
 
 /// Extract receiver from envelope
-pub fn get_receiver(envelope: &Envelope<'_>) -> String {
+fn get_receiver(envelope: &Envelope<'_>) -> String {
     envelope
         .to
         .as_ref()
@@ -84,7 +84,7 @@ pub fn get_receiver(envelope: &Envelope<'_>) -> String {
 }
 
 /// Extract datetime from envelope
-pub fn get_datetime(envelope: &Envelope<'_>) -> String {
+fn get_datetime(envelope: &Envelope<'_>) -> String {
     envelope
         .date
         .and_then(|date| std::str::from_utf8(date).ok())
@@ -93,7 +93,7 @@ pub fn get_datetime(envelope: &Envelope<'_>) -> String {
 }
 
 /// Extract is_seen flag from message
-pub fn is_seen(message: &Fetch) -> bool {
+fn is_seen(message: &Fetch) -> bool {
     message.flags().contains(&imap::types::Flag::Seen)
 }
 
@@ -126,16 +126,16 @@ fn format_address(address: &Address) -> String {
 
 /// Fetches emails from the provider and stores in database
 pub async fn sync_emails() -> anyhow::Result<()> {
-    // Channel to send database operations to database writer task.
-    // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
-    // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
-    // so buffer size of 100 is more than enough.
     // Gmail IMAP server.
     let domain = "imap.gmail.com";
     let port = 993;
 
     let (username, password) = get_credentials().await?;
 
+    // Channel to send database operations to database writer task.
+    // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
+    // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
+    // so buffer size of 100 is more than enough.
     let (db_sender, mut db_receiver) = channel(100);
     let db_task: JoinHandle<anyhow::Result<()>> = {
         let username = username.clone();

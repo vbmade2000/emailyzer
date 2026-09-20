@@ -8,6 +8,7 @@ use sqlx::{
 use tracing::{debug, info};
 
 /// Where a `DatabaseManager` should open its SQLite connection.
+#[allow(dead_code)]
 pub enum DatabaseLocation<'a> {
     /// A database file on disk at the given path.
     File(&'a str),

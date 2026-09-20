@@ -9,6 +9,9 @@ $ cargo install sqlx-cli --no-default-features --features native-tls,sqlite
 
 ```
 
+## Supported providers
+- Gmail
+
 ## Export Gmail credentials
 ```
 $ export GMAIL_USERNAME="your-gmail-email"
