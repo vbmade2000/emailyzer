@@ -79,7 +79,7 @@ impl DatabaseManager {
 
         let result = sqlx::query(
             r#"
-                INSERT OR IGNORE INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                INSERT OR IGNORE INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body, label) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#
         )
         .bind(uid)
@@ -90,6 +90,7 @@ impl DatabaseManager {
         .bind(email.attachment)
         .bind(email.timestamp)
         .bind(email.body)
+        .bind(email.label)
         .execute(&mut *conn).await?;
 
         if result.rows_affected() == 0 {
@@ -137,27 +138,17 @@ impl DatabaseManager {
         Ok(())
     }
 
-    /// Get the last fetched UID from "emails" database table
-    pub async fn _get_last_fetched_uid(&self) -> anyhow::Result<u32> {
-        let mut conn = self.conn.acquire().await?;
-
-        let last_uid: u32 = sqlx::query_scalar("SELECT COALESCE(MAX(uid), 0) FROM emails")
-            .fetch_one(&mut *conn)
-            .await?;
-
-        Ok(last_uid)
-    }
-
-    /// Read all emails from "emails" database table
-    pub async fn read_emails_from_database(&self) -> anyhow::Result<Vec<Email>> {
+    /// Read all emails from "emails" database table for specific label
+    pub async fn read_emails_from_database(&self, label: &str) -> anyhow::Result<Vec<Email>> {
         let mut conn = self.conn.acquire().await?;
 
         let emails = sqlx::query(
             r#"
-                SELECT uid, subject, sender, read_status, receiver, has_attachment, timestamp, body
-                FROM emails
+                SELECT uid, subject, sender, read_status, receiver, has_attachment, timestamp, body, label
+                FROM emails WHERE label = ?1
             "#,
         )
+        .bind(label.to_lowercase())
         .try_map(|row: sqlx::sqlite::SqliteRow| {
             Ok(Email {
                 uid: row.try_get("uid")?,
@@ -165,9 +156,10 @@ impl DatabaseManager {
                 sender: row.try_get("sender")?,
                 read_status: row.try_get("read_status")?,
                 receiver: row.try_get("receiver")?,
-                attachment: row.try_get("has_attachment")?,
+                attachment: row.try_get::<i16, _>("has_attachment")?,
                 timestamp: row.try_get("timestamp")?,
                 body: row.try_get("body")?,
+                label: row.try_get("label")?,
             })
         })
         .fetch_all(&mut *conn)

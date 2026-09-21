@@ -1,15 +1,20 @@
 -- Create emails table
-CREATE TABLE emails 
+-- uid is only unique within a single mailbox (label), not across mailboxes, so the primary key
+-- must be the (uid, label) pair rather than uid alone. Otherwise a UID collision between two
+-- different mailboxes (e.g. INBOX and [Gmail]/Sent Mail) would cause one of them to be silently
+-- dropped by INSERT OR IGNORE.
+CREATE TABLE emails
 (
-    uid INTEGER PRIMARY KEY,
+    uid INTEGER NOT NULL,
     subject TEXT,
     sender TEXT NOT NULL,
     receiver TEXT NOT NULL,
     read_status bool,
-    has_attachment bool NOT NULL,
+    has_attachment SMALLINT NOT NULL,
     timestamp TEXT NOT NULL,
     body TEXT,
-    label TEXT DEFAULT 'INBOX'
+    label TEXT NOT NULL DEFAULT 'INBOX',
+    PRIMARY KEY (uid, label)
 );
 
 -- Create sender_email_stats table

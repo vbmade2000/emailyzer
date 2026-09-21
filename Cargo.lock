@@ -497,6 +497,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "imap",
+ "imap-proto",
  "mailparse",
  "native-tls",
  "serde",
