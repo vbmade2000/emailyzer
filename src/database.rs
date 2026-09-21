@@ -3,7 +3,9 @@ use std::str::FromStr;
 use crate::types::{Email, SenderStats};
 use sqlx::{
     Row as _,
-    sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+    },
 };
 use tracing::{debug, info};
 
@@ -30,7 +32,17 @@ impl DatabaseManager {
         let (opts, description) = match location {
             DatabaseLocation::File(path) => (
                 SqliteConnectOptions::from_str(format!("sqlite://{path}").as_str())?
-                    .create_if_missing(true),
+                    .create_if_missing(true)
+                    // WAL lets writers and readers (e.g. an external SQLite editor) work
+                    // concurrently without blocking each other, and only fsyncs at checkpoints
+                    // instead of on every single-statement commit like the default rollback
+                    // journal does. That per-commit fsync is what was causing the multi-second
+                    // "slow statement" warnings on each INSERT.
+                    .journal_mode(SqliteJournalMode::Wal)
+                    // NORMAL is safe under WAL: at worst a crash loses the last few committed
+                    // transactions (not corrupting the database), while avoiding an fsync on
+                    // every commit.
+                    .synchronous(SqliteSynchronous::Normal),
                 format!("SQLite database {path}"),
             ),
             #[cfg(test)]

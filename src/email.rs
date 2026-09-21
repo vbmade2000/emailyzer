@@ -191,6 +191,85 @@ fn spawn_db_writer_task(
     })
 }
 
+/// Spawns the task that fetches messages from `mailbox` and forwards them to the database writer
+/// task.
+///
+/// Opens its own IMAP connection (separate from the writer task's), does a single bulk
+/// `UID FETCH` for all message envelopes/flags, and sends one `Email` (with `attachment` left as
+/// a placeholder; the writer task fills in the real value) per message over `db_sender`. Sends
+/// `DatabaseOperations::Exit` once done so the writer task knows to stop.
+fn spawn_fetch_task(
+    domain: &'static str,
+    port: u16,
+    username: String,
+    password: String,
+    mailbox: &'static str,
+    db_sender: tokio::sync::mpsc::Sender<DatabaseOperations>,
+) -> JoinHandle<anyhow::Result<()>> {
+    tokio::spawn(async move {
+        let client = get_client(domain, port).await?;
+        info!("Connected successfully.");
+
+        info!("Authenticating...");
+        let mut session = get_session(&username, &password, client).await?;
+
+        let _mailbox = session.examine(mailbox)?;
+
+        let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
+
+        info!("Fetching {} messages", messages.len());
+
+        for message in &messages {
+            // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
+            let uid = message.uid.unwrap_or(0);
+
+            // Extract fields
+            let envelope = message.envelope();
+
+            // This is an edge case. There may be an email for which the envelope would not be retreieved.
+            if envelope.is_none() {
+                tracing::warn!("Envelope is None for UID {}, skipping", uid);
+                continue;
+            }
+
+            let envelope = envelope.as_ref().unwrap();
+            let is_seen = is_seen(message);
+
+            let email = Email {
+                uid,
+                subject: get_subject(envelope),
+                sender: get_sender(envelope),
+                read_status: is_seen,
+                receiver: get_receiver(envelope),
+                attachment: false,
+                timestamp: get_datetime(envelope),
+                body: "".to_string(),
+            };
+
+            if db_sender
+                .send(DatabaseOperations::CreateEmailEntry(email))
+                .await
+                .is_err()
+            {
+                // The receiver was dropped, which means the database writer task already
+                // exited (most likely due to an error). The caller awaits that task separately
+                // and surfaces its real underlying error instead of this generic one.
+                anyhow::bail!("Database writer task exited unexpectedly");
+            }
+        }
+
+        // Only send Exit if the writer task is still alive; ignore error here since the task may
+        // have already stopped, in which case the caller's await of that task surfaces the real
+        // error.
+        let _ = db_sender.send(DatabaseOperations::Exit).await;
+
+        session.logout()?;
+        info!("Session disconnected successfully.");
+
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
 /// Fetches emails from the provider and stores in database
 pub async fn sync_emails() -> anyhow::Result<()> {
     // Gmail IMAP server.
@@ -203,7 +282,7 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
     // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
     // so buffer size of 100 is more than enough.
-    let (db_sender, db_receiver) = channel(100);
+    let (db_sender, db_receiver) = channel(500);
     let db_task = spawn_db_writer_task(
         domain,
         port,
@@ -211,74 +290,14 @@ pub async fn sync_emails() -> anyhow::Result<()> {
         password.clone(),
         db_receiver,
     );
+    let fetch_task = spawn_fetch_task(domain, port, username, password, "INBOX", db_sender);
 
-    let client = get_client(domain, port).await?;
-    info!("Connected successfully.");
-
-    info!("Authenticating...");
-    let mut session = get_session(&username, &password, client).await?;
-
-    let _mailbox = session.examine("INBOX")?;
-
-    let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
-
-    info!("Fetching {} messages", messages.len());
-
-    for message in &messages {
-        // Unique ID for every email. There is also sequence number but don't depend on it because it changes.
-        let uid = message.uid.unwrap_or(0);
-
-        // Extract fields
-        let envelope = message.envelope();
-
-        // This is an edge case. There may be an email for which the envelope would not be retreieved.
-        if envelope.is_none() {
-            tracing::warn!("Envelope is None for UID {}, skipping", uid);
-            continue;
-        }
-
-        let envelope = envelope.as_ref().unwrap();
-        let is_seen = is_seen(message);
-
-        // Body fetching/attachment detection is done by the database writer task over its own
-        // IMAP connection, so it can run concurrently with this envelope-fetch loop instead of
-        // this loop alternating between envelope fetches and per-message body fetches.
-        // `attachment` is a placeholder here; the writer task fills in the real value.
-        let email = Email {
-            uid,
-            subject: get_subject(envelope),
-            sender: get_sender(envelope),
-            read_status: is_seen,
-            receiver: get_receiver(envelope),
-            attachment: false,
-            timestamp: get_datetime(envelope),
-            body: "".to_string(),
-        };
-
-        if db_sender
-            .send(DatabaseOperations::CreateEmailEntry(email))
-            .await
-            .is_err()
-        {
-            // The receiver was dropped, which means the database writer task already exited
-            // (most likely due to an error). Await it now to surface the real underlying error
-            // instead of the generic "channel closed" message.
-            db_task.await??;
-            anyhow::bail!("Database writer task exited unexpectedly");
-        }
-    }
-
-    // Only send Exit if the writer task is still alive; ignore error here since the task may
-    // have already stopped, in which case db_task.await below will surface the real error.
-    let _ = db_sender.send(DatabaseOperations::Exit).await;
-
-    // Ensure the database writer task has finished flushing all writes before returning,
-    // and propagate any error it encountered.
-    db_task.await??;
-
-    session.logout()?;
-
-    info!("Session disconnected successfully.");
+    // Await both concurrently-running tasks. Prefer surfacing the writer task's error (if any)
+    // since it's the true root cause; the fetch task's error in that scenario is just a generic
+    // "channel closed" message caused by the writer task exiting first.
+    let (fetch_result, db_result) = tokio::join!(fetch_task, db_task);
+    db_result??;
+    fetch_result??;
 
     Ok(())
 }
