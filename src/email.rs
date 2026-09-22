@@ -13,11 +13,11 @@ use tokio_imap::types::{Address, Envelope};
 use tracing::{debug, info};
 
 use crate::{
-    SendersArgs, SortBy,
+    ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs,
     database::{DatabaseLocation, DatabaseManager},
     types::{
         DATABASE_URL, DatabaseOperations, Email, GMAIL_IMAP_DOMAIN, GMAIL_IMAP_PORT, INBOX_MAILBOX,
-        SENT_EMAILS_MAILBOX, SenderStats,
+        ReceiverStats, SENT_EMAILS_MAILBOX, SenderStats,
     },
 };
 
@@ -648,8 +648,8 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
     // present, default to sorting by emails so "top N" has a well-defined meaning (highest
     // email counts first).
     match sendersargs.sort_by {
-        Some(SortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
-        Some(SortBy::Sender) => rows.sort_by(|a, b| a.sender.cmp(&b.sender)),
+        Some(SenderSortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
+        Some(SenderSortBy::Sender) => rows.sort_by(|a, b| a.sender.cmp(&b.sender)),
         None => {
             if sendersargs.top.is_some() {
                 rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
@@ -670,6 +670,136 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
             sender_stat.unread_emails.to_string(),
             sender_stat.attachment_count.to_string(),
             sender_stat.no_attachment_count.to_string(),
+        ]);
+    }
+
+    println!("{table}");
+
+    Ok(())
+}
+
+pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<()> {
+    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+
+    // Prepare table for display
+    let mut table = Table::new();
+    table.set_header(vec![
+        "Receiver",
+        "Emails",
+        "Read",
+        "Unread",
+        "Attachment",
+        "No Attachment",
+    ]);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_style(UTF8_FULL.with_rounded_corners());
+
+    let preferred_receivers = receiversargs.receiver;
+
+    let mut rows: Vec<ReceiverStats> = Vec::new();
+
+    if receiversargs.refresh {
+        info!("User has passed --refresh flag. Reading emails from database");
+        let emails: Vec<Email> = db_manager
+            .read_emails_from_database(&SENT_EMAILS_MAILBOX.to_lowercase())
+            .await?;
+        info!("Fetched {} emails from database", emails.len());
+
+        let mut receivers: HashMap<String, ReceiverStats> = HashMap::new();
+
+        // Count emails sent by each unique receiver
+        for email in emails {
+            let receiver_stat = receivers.entry(email.receiver.clone()).or_default();
+            receiver_stat.receiver = email.receiver;
+
+            receiver_stat.total_emails += 1;
+
+            if email.read_status {
+                receiver_stat.read_emails += 1;
+            } else {
+                receiver_stat.unread_emails += 1;
+            }
+
+            if email.attachment == 1 {
+                receiver_stat.attachment_count += 1;
+            } else {
+                receiver_stat.no_attachment_count += 1;
+            }
+        }
+
+        // Clear database table first to make fresh entries
+        db_manager.delete_all_receiver_email_stats_entries().await?;
+
+        // Save the stats in database because user has used --refresh flag. Also, print records on stdout
+        for (receiver, stats) in receivers {
+            db_manager
+                .create_receiver_email_stats_entry(
+                    receiver.clone(),
+                    stats.total_emails,
+                    stats.read_emails,
+                    stats.unread_emails,
+                    stats.attachment_count,
+                    stats.no_attachment_count,
+                )
+                .await?;
+
+            // We show only records from preferred senders if user has passed --sender flag
+            if !preferred_receivers.is_empty() && !preferred_receivers.contains(&receiver) {
+                continue;
+            }
+
+            rows.push(stats);
+        }
+    } else {
+        info!(
+            "User has skipped --refresh flag. Reading existing receiver email stats from database"
+        );
+        let receivers_stats = db_manager.read_receiver_email_stats().await?;
+
+        if receivers_stats.is_empty() {
+            info!(
+                "No receiver email stats found in database. Please use --refresh flag to sync emails first"
+            );
+            return Ok(());
+        }
+
+        for receiver_stats in receivers_stats {
+            // We show only records from preferred senders if user has passed --sender flag
+            if !preferred_receivers.is_empty()
+                && !preferred_receivers.contains(&receiver_stats.receiver)
+            {
+                continue;
+            }
+            rows.push(receiver_stats);
+        }
+    }
+
+    // Sort the rows based on --sort-by flag, if provided. If --sort-by is absent but --top is
+    // present, default to sorting by emails so "top N" has a well-defined meaning (highest
+    // email counts first).
+    match receiversargs.sort_by {
+        Some(ReceiverSortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
+        Some(ReceiverSortBy::Receiver) => rows.sort_by(|a, b| a.receiver.cmp(&b.receiver)),
+        None => {
+            if receiversargs.top.is_some() {
+                rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
+            }
+        }
+    }
+
+    // Show only the top N rows (in whatever order was established above) if --top was passed.
+    if let Some(top) = receiversargs.top {
+        rows.truncate(top as usize);
+    }
+
+    for receiver_stat in rows {
+        table.add_row(vec![
+            receiver_stat.receiver,
+            receiver_stat.total_emails.to_string(),
+            receiver_stat.read_emails.to_string(),
+            receiver_stat.unread_emails.to_string(),
+            receiver_stat.attachment_count.to_string(),
+            receiver_stat.no_attachment_count.to_string(),
         ]);
     }
 

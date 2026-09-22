@@ -7,7 +7,7 @@ use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-use crate::email::{get_sender_stats, sync_emails};
+use crate::email::{get_receiver_stats, get_sender_stats, sync_emails};
 
 mod database;
 mod email;
@@ -33,14 +33,22 @@ struct Cli {
 enum Commands {
     /// Fetch emails from the provider
     Sync,
-    // Analyze the fetched emails
+    // Analyze the fetched emails for senders
     Senders(SendersArgs),
+    // Analyze the fetched emails for senders
+    Receivers(ReceiversArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
-pub enum SortBy {
+pub enum SenderSortBy {
     Emails,
     Sender,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum ReceiverSortBy {
+    Emails,
+    Receiver,
 }
 
 #[derive(Args, Debug)]
@@ -51,10 +59,26 @@ pub struct SendersArgs {
     /// Filter by senders. eg: --sender "sender1@example.com" --sender "sender2@example.com"
     #[arg(short, long, value_name = "SENDER", action = clap::ArgAction::Append)]
     pub sender: Vec<String>,
-    /// Sort by email or emails
-    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(SortBy))]
-    pub sort_by: Option<SortBy>,
+    /// Sort by total emails received
+    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(SenderSortBy))]
+    pub sort_by: Option<SenderSortBy>,
     /// Show top N senders by no of emails
+    #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u8))]
+    pub top: Option<u8>,
+}
+
+#[derive(Args, Debug)]
+pub struct ReceiversArgs {
+    /// Perform fresh calculations from existing database entries
+    #[arg(short, long)]
+    pub refresh: bool,
+    /// Filter by receivers. eg: --receiver "receiver1@example.com" --receiver "receiver2@example.com"
+    #[arg(short, long, value_name = "RECEIVER", action = clap::ArgAction::Append)]
+    pub receiver: Vec<String>,
+    /// Sort by total emails sent
+    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(ReceiverSortBy))]
+    pub sort_by: Option<ReceiverSortBy>,
+    /// Show top N receivers by no of emails
     #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u8))]
     pub top: Option<u8>,
 }
@@ -73,6 +97,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Senders(sendersargs) => {
             get_sender_stats(sendersargs).await?;
+        }
+        Commands::Receivers(receiversargs) => {
+            get_receiver_stats(receiversargs).await?;
         }
     }
 

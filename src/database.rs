@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::types::{Email, SenderStats};
+use crate::types::{Email, ReceiverStats, SenderStats};
 use sqlx::{
     Row as _,
     sqlite::{
@@ -128,11 +128,49 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Create an entry in "receiver_email_stats" database table
+    pub async fn create_receiver_email_stats_entry(
+        &self,
+        receiver: String,
+        total_emails: u32,
+        read_emails: u32,
+        unread_emails: u32,
+        attachment_count: u32,
+        no_attachment_count: u32,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.conn.acquire().await?;
+
+        sqlx::query(
+            r#"
+                INSERT INTO receiver_email_stats (receiver, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#
+        )
+        .bind(receiver)
+        .bind(total_emails)
+        .bind(read_emails)
+        .bind(unread_emails)
+        .bind(attachment_count)
+        .bind(no_attachment_count)
+        .execute(&mut *conn).await?;
+
+        Ok(())
+    }
+
     /// Delete all entries from "sender_email_stats" database table
     pub async fn delete_all_sender_email_stats_entries(&self) -> anyhow::Result<()> {
         let mut conn = self.conn.acquire().await?;
 
         sqlx::query("DELETE FROM sender_email_stats")
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete all entries from "receiver_email_stats" database table
+    pub async fn delete_all_receiver_email_stats_entries(&self) -> anyhow::Result<()> {
+        let mut conn = self.conn.acquire().await?;
+
+        sqlx::query("DELETE FROM receiver_email_stats")
             .execute(&mut *conn)
             .await?;
         Ok(())
@@ -192,5 +230,31 @@ impl DatabaseManager {
         .await?;
 
         Ok(senders)
+    }
+
+    /// Read receiver email stats from "receiver_email_stats" database table
+    pub async fn read_receiver_email_stats(&self) -> anyhow::Result<Vec<ReceiverStats>> {
+        let mut conn = self.conn.acquire().await?;
+
+        let receivers = sqlx::query(
+            r#"
+                SELECT receiver, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count
+                FROM receiver_email_stats
+            "#,
+        )
+        .try_map(|row: sqlx::sqlite::SqliteRow| {
+            Ok(ReceiverStats {
+                receiver: row.try_get("receiver")?,
+                total_emails: row.try_get("total_emails")?,
+                read_emails: row.try_get("read_emails")?,
+                unread_emails: row.try_get("unread_emails")?,
+                attachment_count: row.try_get("attachment_count")?,
+                no_attachment_count: row.try_get("no_attachment_count")?,
+            })
+        })
+        .fetch_all(&mut *conn)
+        .await?;
+
+        Ok(receivers)
     }
 }

@@ -25,6 +25,17 @@ pub struct SenderStats {
     pub no_attachment_count: u32,
 }
 
+/// Represents sender email stats for a single sender
+#[derive(Debug, Default)]
+pub struct ReceiverStats {
+    pub receiver: String,
+    pub total_emails: u32,
+    pub read_emails: u32,
+    pub unread_emails: u32,
+    pub attachment_count: u32,
+    pub no_attachment_count: u32,
+}
+
 /// Database operations
 pub enum DatabaseOperations {
     CreateEmailEntry(Email),
