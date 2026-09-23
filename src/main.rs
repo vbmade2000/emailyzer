@@ -7,10 +7,14 @@ use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-use crate::email::{get_receiver_stats, get_sender_stats, sync_emails};
+use crate::{
+    email::{get_provider_mailboxes, get_receiver_stats, get_sender_stats, sync_emails},
+    providers::{add_provider, delete_provider, list_providers, set_default_provider},
+};
 
 mod database;
 mod email;
+mod providers;
 mod types;
 
 #[derive(Parser, Debug)]
@@ -32,11 +36,13 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Fetch emails from the provider
-    Sync,
+    Sync(SyncArgs),
     // Analyze the fetched emails for senders
     Senders(SendersArgs),
-    // Analyze the fetched emails for senders
+    /// Analyze the fetched emails for senders
     Receivers(ReceiversArgs),
+    /// Manage email providers
+    Providers(ProvidersArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
@@ -60,11 +66,89 @@ pub struct SendersArgs {
     #[arg(short, long, value_name = "SENDER", action = clap::ArgAction::Append)]
     pub sender: Vec<String>,
     /// Sort by total emails received
-    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(SenderSortBy))]
+    #[arg(short = 'o', long, value_name = "SORT_BY", value_parser = clap::value_parser!(SenderSortBy))]
     pub sort_by: Option<SenderSortBy>,
     /// Show top N senders by no of emails
     #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u8))]
     pub top: Option<u8>,
+    /// Provider name
+    #[arg(short, long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ProvidersArgs {
+    #[command(subcommand)]
+    pub subcommand: ProviderSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProviderSubcommand {
+    /// Add a new provider
+    Add(AddProviderArgs),
+    /// Delete a provider
+    Delete(DeleteProviderArgs),
+    /// List all configured providers
+    List,
+    /// Set default provider
+    Default(DefaultProviderArgs),
+    /// Fetch and display all mailboxes/labels available for a provider
+    Mailboxes(MailboxesArgs),
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct MailboxesArgs {
+    /// IMAP server URL
+    #[arg(short, long, value_name = "URL")]
+    pub url: String,
+    /// IMAP server port
+    #[arg(short, long, value_name = "PORT")]
+    pub port: u16,
+    /// Username
+    #[arg(short = 'e', long, value_name = "USERNAME")]
+    pub username: String,
+    /// Password
+    #[arg(short = 'w', long, value_name = "PASSWORD")]
+    pub password: String,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct AddProviderArgs {
+    /// Name of the provider
+    #[arg(short, long, value_name = "NAME")]
+    pub name: String,
+    /// IMAP server URL
+    #[arg(short, long, value_name = "URL")]
+    pub url: String,
+    /// IMAP server port
+    #[arg(short, long, value_name = "PORT")]
+    pub port: u16,
+    /// Username
+    #[arg(short = 'e', long, value_name = "USERNAME")]
+    pub username: String,
+    /// Password
+    #[arg(short = 'w', long, value_name = "PASSWORD")]
+    pub password: String,
+    /// Mailbox/label name for the inbox, e.g. "INBOX" for Gmail.
+    #[arg(short = 'i', long, value_name = "INBOX_LABEL")]
+    pub inbox_label: String,
+    /// Mailbox/label name for sent emails, e.g. "[Gmail]/Sent Mail" for Gmail.
+    #[arg(short = 's', long, value_name = "SENT_LABEL")]
+    pub sent_label: String,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct DeleteProviderArgs {
+    /// Name of the provider
+    #[arg(short, long, value_name = "NAME")]
+    pub name: String,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct DefaultProviderArgs {
+    /// Name of the provider
+    #[arg(short, long, value_name = "NAME")]
+    pub name: String,
 }
 
 #[derive(Args, Debug)]
@@ -73,14 +157,24 @@ pub struct ReceiversArgs {
     #[arg(short, long)]
     pub refresh: bool,
     /// Filter by receivers. eg: --receiver "receiver1@example.com" --receiver "receiver2@example.com"
-    #[arg(short, long, value_name = "RECEIVER", action = clap::ArgAction::Append)]
+    #[arg(short = 'e', long, value_name = "RECEIVER", action = clap::ArgAction::Append)]
     pub receiver: Vec<String>,
     /// Sort by total emails sent
-    #[arg(short, long, value_name = "SORT_BY", value_parser = clap::value_parser!(ReceiverSortBy))]
+    #[arg(short = 'o', long, value_name = "SORT_BY", value_parser = clap::value_parser!(ReceiverSortBy))]
     pub sort_by: Option<ReceiverSortBy>,
     /// Show top N receivers by no of emails
     #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u8))]
     pub top: Option<u8>,
+    /// Provider name
+    #[arg(short, long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SyncArgs {
+    /// Provider name
+    #[arg(short, long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
 }
 
 #[tokio::main]
@@ -91,8 +185,8 @@ async fn main() -> anyhow::Result<()> {
 
     let commands = cli.command;
     match commands {
-        Commands::Sync => {
-            sync_emails().await?;
+        Commands::Sync(syncargs) => {
+            sync_emails(syncargs).await?;
             println!("Sync completed successfully \n");
         }
         Commands::Senders(sendersargs) => {
@@ -101,6 +195,23 @@ async fn main() -> anyhow::Result<()> {
         Commands::Receivers(receiversargs) => {
             get_receiver_stats(receiversargs).await?;
         }
+        Commands::Providers(providerargs) => match providerargs.subcommand {
+            ProviderSubcommand::Add(add_provider_args) => {
+                add_provider(add_provider_args).await?;
+            }
+            ProviderSubcommand::Delete(delete_provider_args) => {
+                delete_provider(delete_provider_args).await?;
+            }
+            ProviderSubcommand::List => {
+                list_providers().await?;
+            }
+            ProviderSubcommand::Default(default_provider_args) => {
+                set_default_provider(default_provider_args).await?;
+            }
+            ProviderSubcommand::Mailboxes(mailboxes_args) => {
+                get_provider_mailboxes(mailboxes_args).await?;
+            }
+        },
     }
 
     Ok(())

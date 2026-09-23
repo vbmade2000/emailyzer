@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 /// Represents an email message
 #[derive(Debug)]
 pub struct Email {
@@ -12,6 +14,7 @@ pub struct Email {
     pub timestamp: String,
     pub body: String,
     pub label: String,
+    pub provider: String,
 }
 
 /// Represents sender email stats for a single sender
@@ -36,6 +39,26 @@ pub struct ReceiverStats {
     pub no_attachment_count: u32,
 }
 
+/// Represents an email provider
+#[derive(Debug, Default)]
+pub struct Provider {
+    pub name: String,
+    pub url: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    /// Mailbox/label name for the inbox, e.g. "INBOX" for Gmail.
+    pub inbox_label: String,
+    /// Mailbox/label name for sent emails, e.g. "[Gmail]/Sent Mail" for Gmail.
+    pub sent_label: String,
+}
+
+impl Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
 /// Database operations
 pub enum DatabaseOperations {
     CreateEmailEntry(Email),
@@ -44,8 +67,5 @@ pub enum DatabaseOperations {
 // Contants
 pub const DATABASE_URL: &str = "emailyzer.db";
 
-// Gmail constants
-pub const INBOX_MAILBOX: &str = "INBOX";
-pub const SENT_EMAILS_MAILBOX: &str = "[Gmail]/Sent Mail";
-pub const GMAIL_IMAP_DOMAIN: &str = "imap.gmail.com";
-pub const GMAIL_IMAP_PORT: u16 = 993;
+// Application wide settings
+pub const DEFAULT_PROVIDER_KEY: &str = "default_provider";

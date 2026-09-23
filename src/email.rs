@@ -13,26 +13,10 @@ use tokio_imap::types::{Address, Envelope};
 use tracing::{debug, info};
 
 use crate::{
-    ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs,
+    MailboxesArgs, ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs, SyncArgs,
     database::{DatabaseLocation, DatabaseManager},
-    types::{
-        DATABASE_URL, DatabaseOperations, Email, GMAIL_IMAP_DOMAIN, GMAIL_IMAP_PORT, INBOX_MAILBOX,
-        ReceiverStats, SENT_EMAILS_MAILBOX, SenderStats,
-    },
+    types::{DATABASE_URL, DatabaseOperations, Email, ReceiverStats, SenderStats},
 };
-
-/// Retrieves email credentials from env vars.
-/// You can set it in current shell or .bashrc as below.
-/// export GMAIL_USERNAME="your-gmail-username"
-/// export GMAIL_PWD="your-gmail-password"
-async fn get_credentials() -> anyhow::Result<(String, String)> {
-    info!("Retrieving credentials from env var");
-    // IMP: Do NOT hardcode your Gmail password or App Password in source code.
-    Ok((
-        std::env::var("GMAIL_USERNAME")?,
-        std::env::var("GMAIL_PWD")?,
-    ))
-}
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
 async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
@@ -171,7 +155,7 @@ fn body_structure_has_attachment(body_structure: &BodyStructure) -> bool {
 /// since reusing a desynced session for further commands causes the `imap` crate to panic (via an
 /// internal `assert_eq!` on response tags) rather than return a `Result`.
 async fn reconnect_session(
-    domain: &'static str,
+    domain: &str,
     port: u16,
     username: &str,
     password: &str,
@@ -205,8 +189,8 @@ async fn reconnect_session(
 async fn fetch_attachments_by_uid(
     session: &mut Session<TlsStream<TcpStream>>,
     uids: &[u32],
-    mailbox: &'static str,
-    domain: &'static str,
+    mailbox: &str,
+    domain: &str,
     port: u16,
     username: &str,
     password: &str,
@@ -306,11 +290,11 @@ const ATTACHMENT_FETCH_CONNECTIONS: usize = 4;
 /// If a connection can't be established/authenticated at all, that slice's UIDs are logged and
 /// treated as "no attachment" rather than aborting the whole fetch.
 async fn fetch_attachments_parallel(
-    domain: &'static str,
+    domain: String,
     port: u16,
     username: String,
     password: String,
-    mailbox: &'static str,
+    mailbox: String,
     uids: Vec<u32>,
 ) -> HashMap<u32, i16> {
     if uids.is_empty() {
@@ -325,18 +309,20 @@ async fn fetch_attachments_parallel(
         let chunk = chunk.to_vec();
         let username = username.clone();
         let password = password.clone();
+        let domain = domain.clone();
+        let mailbox = mailbox.clone();
         let connection_label = format!("conn {}/{}", connection_index + 1, connections);
 
         handles.push(tokio::spawn(async move {
-            let client = get_client(domain, port).await?;
+            let client = get_client(&domain, port).await?;
             let mut session = get_session(&username, &password, client).await?;
-            session.examine(mailbox)?;
+            session.examine(&mailbox)?;
 
             let result = fetch_attachments_by_uid(
                 &mut session,
                 &chunk,
-                mailbox,
-                domain,
+                &mailbox,
+                &domain,
                 port,
                 &username,
                 &password,
@@ -409,11 +395,12 @@ fn spawn_db_writer_task(
 /// fully-formed `Email` over `db_sender`. Once done, drops its `db_sender` clone so the writer
 /// task's channel can close once every fetch task sharing it has finished.
 fn spawn_fetch_task(
-    domain: &'static str,
+    domain: String,
     port: u16,
     username: String,
     password: String,
-    mailbox: &'static str,
+    mailbox: String,
+    provider_name: String,
     db_sender: tokio::sync::mpsc::Sender<DatabaseOperations>,
 ) -> JoinHandle<anyhow::Result<()>> {
     info!("Spawning fetch task for {}", mailbox);
@@ -421,12 +408,12 @@ fn spawn_fetch_task(
     tokio::spawn(async move {
         let fetch_started_at = Instant::now();
 
-        let client = get_client(domain, port).await?;
+        let client = get_client(&domain, port).await?;
         info!("Connected successfully");
 
         let mut session = get_session(&username, &password, client).await?;
 
-        let _mailbox = session.examine(mailbox)?;
+        let _mailbox = session.examine(&mailbox)?;
 
         let messages = session.uid_fetch("1:*", "(UID FLAGS ENVELOPE)")?;
 
@@ -441,11 +428,11 @@ fn spawn_fetch_task(
         );
         let uids: Vec<u32> = messages.iter().map(|m| m.uid.unwrap_or(0)).collect();
         let attachments_by_uid = fetch_attachments_parallel(
-            domain,
+            domain.clone(),
             port,
             username.clone(),
             password.clone(),
-            mailbox,
+            mailbox.clone(),
             uids,
         )
         .await;
@@ -478,6 +465,7 @@ fn spawn_fetch_task(
                 timestamp: get_datetime(envelope),
                 body: "".to_string(),
                 label: mailbox.to_lowercase(),
+                provider: provider_name.clone(),
             };
 
             if db_sender
@@ -515,9 +503,31 @@ fn spawn_fetch_task(
 }
 
 /// Fetches emails from the provider and stores in database
-pub async fn sync_emails() -> anyhow::Result<()> {
-    info!("Syncing emails from {}", GMAIL_IMAP_DOMAIN);
-    let (username, password) = get_credentials().await?;
+pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
+    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+
+    let provider = if let Some(provider) = syncargs.provider {
+        provider
+    } else {
+        db_manager
+            .get_default_provider_opt()
+            .await?
+            .unwrap_or_default()
+    };
+
+    if provider.is_empty() {
+        anyhow::bail!(
+            "No provider specified and no default provider set. Please pass --provider <NAME> or set a default provider using 'emailyzer providers default --name <NAME>'"
+        );
+    }
+
+    if !db_manager.provider_exists(provider.clone()).await? {
+        anyhow::bail!("Provider '{}' not found", provider);
+    }
+
+    let provider = db_manager.get_provider_data(provider.clone()).await?;
+
+    info!("Syncing emails from {}", provider.name);
 
     // Channel to send database operations to database writer task.
     // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
@@ -526,19 +536,21 @@ pub async fn sync_emails() -> anyhow::Result<()> {
     let (db_sender, db_receiver) = channel(500);
     let db_task = spawn_db_writer_task(db_receiver);
     let inbox_fetch_task = spawn_fetch_task(
-        GMAIL_IMAP_DOMAIN,
-        GMAIL_IMAP_PORT,
-        username.clone(),
-        password.clone(),
-        INBOX_MAILBOX,
+        provider.url.clone(),
+        provider.port,
+        provider.username.clone(),
+        provider.password.clone(),
+        provider.inbox_label.clone(),
+        provider.name.clone(),
         db_sender.clone(),
     );
     let sent_emails_fetch_task = spawn_fetch_task(
-        GMAIL_IMAP_DOMAIN,
-        GMAIL_IMAP_PORT,
-        username,
-        password,
-        SENT_EMAILS_MAILBOX,
+        provider.url.clone(),
+        provider.port,
+        provider.username.clone(),
+        provider.password.clone(),
+        provider.sent_label.clone(),
+        provider.name.clone(),
         db_sender,
     );
 
@@ -574,9 +586,33 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
 
     let mut rows: Vec<SenderStats> = Vec::new();
 
+    let provider = if let Some(provider) = sendersargs.provider {
+        provider
+    } else {
+        db_manager
+            .get_default_provider_opt()
+            .await?
+            .unwrap_or_default()
+    };
+
+    if provider.is_empty() {
+        anyhow::bail!(
+            "No provider specified and no default provider set. Please pass --provider <NAME> or set a default provider using 'emailyzer providers default --name <NAME>'"
+        );
+    }
+
+    if !db_manager.provider_exists(provider.clone()).await? {
+        anyhow::bail!("Provider '{}' not found", provider);
+    }
+
+    info!("Using provider: {}", provider);
+
     if sendersargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
-        let emails: Vec<Email> = db_manager.read_emails_from_database(INBOX_MAILBOX).await?;
+        let provider_data = db_manager.get_provider_data(provider.clone()).await?;
+        let emails: Vec<Email> = db_manager
+            .read_emails_from_database(&provider_data.inbox_label, provider.clone())
+            .await?;
         info!("Fetched {} emails from database", emails.len());
 
         let mut senders: HashMap<String, SenderStats> = HashMap::new();
@@ -602,7 +638,9 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         }
 
         // Clear database table first to make fresh entries
-        db_manager.delete_all_sender_email_stats_entries().await?;
+        db_manager
+            .delete_all_sender_email_stats_entries(provider.clone())
+            .await?;
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (sender, stats) in senders {
@@ -614,6 +652,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
                     stats.unread_emails,
                     stats.attachment_count,
                     stats.no_attachment_count,
+                    provider.clone(),
                 )
                 .await?;
 
@@ -626,7 +665,7 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
         }
     } else {
         info!("User has skipped --refresh flag. Reading existing sender email stats from database");
-        let senders_stats = db_manager.read_sender_email_stats().await?;
+        let senders_stats = db_manager.read_sender_email_stats(provider).await?;
 
         if senders_stats.is_empty() {
             info!(
@@ -698,10 +737,32 @@ pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<
 
     let mut rows: Vec<ReceiverStats> = Vec::new();
 
+    let provider = if let Some(provider) = receiversargs.provider {
+        provider
+    } else {
+        db_manager
+            .get_default_provider_opt()
+            .await?
+            .unwrap_or_default()
+    };
+
+    if provider.is_empty() {
+        anyhow::bail!(
+            "No provider specified and no default provider set. Please pass --provider <NAME> or set a default provider using 'emailyzer providers default --name <NAME>'"
+        );
+    }
+
+    if !db_manager.provider_exists(provider.clone()).await? {
+        anyhow::bail!("Provider '{}' not found", provider);
+    }
+
+    info!("Using provider: {}", provider);
+
     if receiversargs.refresh {
         info!("User has passed --refresh flag. Reading emails from database");
+        let provider_data = db_manager.get_provider_data(provider.clone()).await?;
         let emails: Vec<Email> = db_manager
-            .read_emails_from_database(&SENT_EMAILS_MAILBOX.to_lowercase())
+            .read_emails_from_database(&provider_data.sent_label.to_lowercase(), provider.clone())
             .await?;
         info!("Fetched {} emails from database", emails.len());
 
@@ -728,7 +789,9 @@ pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<
         }
 
         // Clear database table first to make fresh entries
-        db_manager.delete_all_receiver_email_stats_entries().await?;
+        db_manager
+            .delete_all_receiver_email_stats_entries(provider.clone())
+            .await?;
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
         for (receiver, stats) in receivers {
@@ -740,6 +803,7 @@ pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<
                     stats.unread_emails,
                     stats.attachment_count,
                     stats.no_attachment_count,
+                    provider.clone(),
                 )
                 .await?;
 
@@ -754,7 +818,9 @@ pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<
         info!(
             "User has skipped --refresh flag. Reading existing receiver email stats from database"
         );
-        let receivers_stats = db_manager.read_receiver_email_stats().await?;
+        let receivers_stats = db_manager
+            .read_receiver_email_stats(provider.clone())
+            .await?;
 
         if receivers_stats.is_empty() {
             info!(
@@ -817,6 +883,33 @@ async fn _get_mailboxes(
     let mailbox_names = mailboxes.iter().map(|m| m.name().to_string()).collect();
 
     Ok(mailbox_names)
+}
+
+/// Connects directly to the IMAP server described by `args` and prints out all the
+/// mailboxes/labels available on the account, so the user can pick the correct values for
+/// `--inbox-label`/`--sent-label` when adding a provider.
+pub async fn get_provider_mailboxes(args: MailboxesArgs) -> anyhow::Result<()> {
+    info!("Fetching mailboxes from {}", args.url);
+
+    let client = get_client(&args.url, args.port).await?;
+    let mut session = get_session(&args.username, &args.password, client).await?;
+
+    let mailboxes = _get_mailboxes(&mut session).await?;
+
+    session.logout()?;
+
+    let mut table = Table::new();
+    table.set_header(vec!["Mailbox/Label"]);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_style(UTF8_FULL.with_rounded_corners());
+
+    for mailbox in mailboxes {
+        table.add_row(vec![mailbox]);
+    }
+
+    println!("{table}");
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1026,89 +1119,6 @@ mod tests {
 
         let address = make_address(Some(&[0xff]), Some(b"example.com"));
         assert_eq!(format_address(&address), "<unknown>@example.com");
-    }
-
-    // get_credentials -------------------------------------------------------
-    // Env vars are process-global, so guard these tests with a mutex and
-    // restore the original values afterwards.
-
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_saved_env() -> (
-        std::sync::MutexGuard<'static, ()>,
-        Option<String>,
-        Option<String>,
-    ) {
-        let guard = ENV_GUARD.lock().unwrap();
-        let username = std::env::var("GMAIL_USERNAME").ok();
-        let password = std::env::var("GMAIL_PWD").ok();
-        (guard, username, password)
-    }
-
-    fn restore_env(username: Option<String>, password: Option<String>) {
-        unsafe {
-            match username {
-                Some(value) => std::env::set_var("GMAIL_USERNAME", value),
-                None => std::env::remove_var("GMAIL_USERNAME"),
-            }
-            match password {
-                Some(value) => std::env::set_var("GMAIL_PWD", value),
-                None => std::env::remove_var("GMAIL_PWD"),
-            }
-        }
-    }
-
-    fn block_on_credentials() -> anyhow::Result<(String, String)> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime should build")
-            .block_on(get_credentials())
-    }
-
-    #[test]
-    fn get_credentials_returns_values_from_env() {
-        let (_guard, saved_username, saved_password) = with_saved_env();
-        unsafe {
-            std::env::set_var("GMAIL_USERNAME", "malhar@example.com");
-            std::env::set_var("GMAIL_PWD", "secret");
-        }
-
-        let result = block_on_credentials();
-
-        restore_env(saved_username, saved_password);
-        assert_eq!(
-            result.expect("credentials should be returned"),
-            ("malhar@example.com".to_string(), "secret".to_string())
-        );
-    }
-
-    #[test]
-    fn get_credentials_fails_when_username_is_missing() {
-        let (_guard, saved_username, saved_password) = with_saved_env();
-        unsafe {
-            std::env::remove_var("GMAIL_USERNAME");
-            std::env::set_var("GMAIL_PWD", "secret");
-        }
-
-        let result = block_on_credentials();
-
-        restore_env(saved_username, saved_password);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn get_credentials_fails_when_password_is_missing() {
-        let (_guard, saved_username, saved_password) = with_saved_env();
-        unsafe {
-            std::env::set_var("GMAIL_USERNAME", "malhar@example.com");
-            std::env::remove_var("GMAIL_PWD");
-        }
-
-        let result = block_on_credentials();
-
-        restore_env(saved_username, saved_password);
-        assert!(result.is_err());
     }
 
     // get_tls_connector -----------------------------------------------------
