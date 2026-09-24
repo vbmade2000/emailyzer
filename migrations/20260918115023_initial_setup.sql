@@ -3,6 +3,8 @@
 -- must be the (uid, label) pair rather than uid alone. Otherwise a UID collision between two
 -- different mailboxes (e.g. INBOX and [Gmail]/Sent Mail) would cause one of them to be silently
 -- dropped by INSERT OR IGNORE.
+-- provider_id links each email to the provider it was fetched from (see "providers" table
+-- below). ON DELETE CASCADE ensures deleting a provider also deletes all of its emails.
 CREATE TABLE emails
 (
     uid INTEGER NOT NULL,
@@ -14,7 +16,7 @@ CREATE TABLE emails
     timestamp TEXT NOT NULL,
     body TEXT,
     label TEXT NOT NULL DEFAULT 'INBOX',
-    provider TEXT NOT NULL,
+    provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
     PRIMARY KEY (uid, label)
 );
 
@@ -27,7 +29,7 @@ CREATE TABLE sender_email_stats
     unread_emails INTEGER,
     attachment_count INTEGER,
     no_attachment_count INTEGER,
-    provider TEXT NOT NULL
+    provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE
 );
 
 -- Create receiver_email_stats table to store stats for each receiver
@@ -39,16 +41,19 @@ CREATE TABLE receiver_email_stats
     unread_emails INTEGER,
     attachment_count INTEGER,
     no_attachment_count INTEGER,
-    provider TEXT NOT NULL
+    provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE
 );
 
 -- Create a provider table to store all the email providers
 -- inbox_label/sent_label store the mailbox names for Inbox and Sent Emails, since these
 -- differ between IMAP providers (e.g. Gmail uses "[Gmail]/Sent Mail" for sent emails while
 -- other providers may use "Sent" or "Sent Items"). Default to Gmail's labels.
+-- id is the primary key (rather than provider_name) so it can be used as a stable foreign key
+-- from other tables even if a provider is ever renamed.
 CREATE TABLE providers
 (
-    provider_name TEXT NOT NULL PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_name TEXT NOT NULL UNIQUE,
     imap_server_url TEXT NOT NULL,
     imap_server_port INTEGER NOT NULL,
     username TEXT NOT NULL,

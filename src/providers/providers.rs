@@ -44,19 +44,34 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
         anyhow::bail!("Name is required");
     }
 
+    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+    let email_count = db_manager
+        .count_emails_for_provider(args.name.clone())
+        .await?;
+
     if !args.force {
         use std::io::IsTerminal;
 
+        let warning = if email_count > 0 {
+            format!(
+                "Warning: this will also permanently delete {} email(s) associated with provider '{}'. ",
+                email_count, args.name
+            )
+        } else {
+            String::new()
+        };
+
         if !std::io::stdin().is_terminal() {
             anyhow::bail!(
-                "Refusing to delete provider '{}' without confirmation. Pass --force to skip the prompt.",
+                "{}Refusing to delete provider '{}' without confirmation. Pass --force to skip the prompt.",
+                warning,
                 args.name
             );
         }
 
         let confirmed = inquire::Confirm::new(&format!(
-            "Are you sure you want to delete provider '{}'?",
-            args.name
+            "{}Are you sure you want to delete provider '{}'?",
+            warning, args.name
         ))
         .with_default(false)
         .prompt()?;
@@ -67,7 +82,6 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
         }
     }
 
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
     let rows_affected = db_manager.delete_provider(args.name.clone()).await?;
 
     if rows_affected == 0 {

@@ -32,12 +32,16 @@ impl DatabaseManager {
                     // NORMAL is safe under WAL: at worst a crash loses the last few committed
                     // transactions (not corrupting the database), while avoiding an fsync on
                     // every commit.
-                    .synchronous(SqliteSynchronous::Normal),
+                    .synchronous(SqliteSynchronous::Normal)
+                    // Required for ON DELETE CASCADE (e.g. deleting a provider also deletes its
+                    // emails/stats) to actually take effect: SQLite ignores foreign key actions
+                    // unless this pragma is enabled per-connection.
+                    .foreign_keys(true),
                 format!("SQLite database {path}"),
             ),
             #[cfg(test)]
             DatabaseLocation::Memory => (
-                SqliteConnectOptions::from_str("sqlite::memory:")?,
+                SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true),
                 "in-memory SQLite database".to_string(),
             ),
         };
@@ -69,7 +73,8 @@ impl DatabaseManager {
 
         let result = sqlx::query(
             r#"
-                INSERT OR IGNORE INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body, label, provider) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                INSERT OR IGNORE INTO emails (uid, subject, sender, read_status, receiver, has_attachment, timestamp, body, label, provider_id)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT id FROM providers WHERE provider_name = ?10))
             "#
         )
         .bind(uid)
@@ -107,7 +112,8 @@ impl DatabaseManager {
 
         sqlx::query(
             r#"
-                INSERT INTO sender_email_stats (sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count, provider) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO sender_email_stats (sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count, provider_id)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT id FROM providers WHERE provider_name = ?7))
             "#
         )
         .bind(sender)
@@ -138,7 +144,8 @@ impl DatabaseManager {
 
         sqlx::query(
             r#"
-                INSERT INTO receiver_email_stats (receiver, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count, provider) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO receiver_email_stats (receiver, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count, provider_id)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT id FROM providers WHERE provider_name = ?7))
             "#
         )
         .bind(receiver)
@@ -160,10 +167,12 @@ impl DatabaseManager {
     ) -> anyhow::Result<()> {
         let mut conn = self.conn.acquire().await?;
 
-        sqlx::query("DELETE FROM sender_email_stats WHERE provider = ?1")
-            .bind(provider)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "DELETE FROM sender_email_stats WHERE provider_id = (SELECT id FROM providers WHERE provider_name = ?1)",
+        )
+        .bind(provider)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
@@ -174,10 +183,12 @@ impl DatabaseManager {
     ) -> anyhow::Result<()> {
         let mut conn = self.conn.acquire().await?;
 
-        sqlx::query("DELETE FROM receiver_email_stats WHERE provider = ?1")
-            .bind(provider)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "DELETE FROM receiver_email_stats WHERE provider_id = (SELECT id FROM providers WHERE provider_name = ?1)",
+        )
+        .bind(provider)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
@@ -191,8 +202,10 @@ impl DatabaseManager {
 
         let emails = sqlx::query(
             r#"
-                SELECT uid, subject, sender, read_status, receiver, has_attachment, timestamp, body, label
-                FROM emails WHERE label = ?1 AND provider = ?2
+                SELECT e.uid, e.subject, e.sender, e.read_status, e.receiver, e.has_attachment, e.timestamp, e.body, e.label
+                FROM emails e
+                JOIN providers p ON p.id = e.provider_id
+                WHERE e.label = ?1 AND p.provider_name = ?2
             "#,
         )
         .bind(label.to_lowercase())
@@ -226,8 +239,10 @@ impl DatabaseManager {
 
         let senders = sqlx::query(
             r#"
-                SELECT sender, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count
-                FROM sender_email_stats WHERE provider = ?1
+                SELECT s.sender, s.total_emails, s.read_emails, s.unread_emails, s.attachment_count, s.no_attachment_count
+                FROM sender_email_stats s
+                JOIN providers p ON p.id = s.provider_id
+                WHERE p.provider_name = ?1
             "#,
         )
         .bind(provider)
@@ -256,8 +271,10 @@ impl DatabaseManager {
 
         let receivers = sqlx::query(
             r#"
-                SELECT receiver, total_emails, read_emails, unread_emails, attachment_count, no_attachment_count
-                FROM receiver_email_stats WHERE provider = ?1
+                SELECT r.receiver, r.total_emails, r.read_emails, r.unread_emails, r.attachment_count, r.no_attachment_count
+                FROM receiver_email_stats r
+                JOIN providers p ON p.id = r.provider_id
+                WHERE p.provider_name = ?1
             "#,
         )
         .bind(provider)
@@ -302,7 +319,9 @@ impl DatabaseManager {
     /// Delete an entry from "providers" database table.
     ///
     /// Returns the number of rows affected, so callers can determine whether a provider with
-    /// the given name actually existed.
+    /// the given name actually existed. Deleting a provider cascades (via the `ON DELETE
+    /// CASCADE` foreign key on `provider_id`) to delete all emails and sender/receiver stats
+    /// associated with it.
     pub async fn delete_provider(&self, name: String) -> anyhow::Result<u64> {
         let mut conn = self.conn.acquire().await?;
 
@@ -312,6 +331,25 @@ impl DatabaseManager {
             .await?;
 
         Ok(result.rows_affected())
+    }
+
+    /// Count how many emails are associated with the given provider name, so callers can warn
+    /// the user before a cascading delete removes them.
+    pub async fn count_emails_for_provider(&self, name: String) -> anyhow::Result<i64> {
+        let mut conn = self.conn.acquire().await?;
+
+        let result = sqlx::query(
+            r#"
+                SELECT COUNT(*) FROM emails e
+                JOIN providers p ON p.id = e.provider_id
+                WHERE p.provider_name = ?1
+            "#,
+        )
+        .bind(name)
+        .fetch_one(&mut *conn)
+        .await?;
+
+        Ok(result.get::<i64, _>(0))
     }
 
     /// Read all providers from "providers" database table
