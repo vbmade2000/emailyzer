@@ -45,7 +45,7 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
     let rows_affected = db_manager.delete_provider(args.name.clone()).await?;
 
     if rows_affected == 0 {
-        anyhow::bail!("Provider '{}' not found", &args.name);
+        anyhow::bail!("Provider '{}' not found", args.name);
     }
 
     info!("Provider {} deleted successfully", &args.name);
@@ -109,7 +109,7 @@ pub async fn set_default_provider(args: DefaultProviderArgs) -> anyhow::Result<(
     let provider_exists = db_manager.provider_exists(provider_name.clone()).await?;
 
     if !provider_exists {
-        anyhow::bail!("Provider '{}' not found", &provider_name);
+        anyhow::bail!("Provider '{}' not found", provider_name);
     }
 
     db_manager
