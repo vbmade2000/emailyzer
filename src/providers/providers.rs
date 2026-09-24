@@ -5,6 +5,7 @@ use super::types::Provider;
 use crate::{
     AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs,
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
+    util::read_secret,
 };
 
 /// Add a new provider
@@ -12,17 +13,19 @@ pub async fn add_provider(args: AddProviderArgs) -> anyhow::Result<()> {
     if args.name.is_empty()
         || args.url.is_empty()
         || args.username.is_empty()
-        || args.password.is_empty()
+        || args.password_file.is_empty()
     {
-        anyhow::bail!("Name, URL, username and password are required");
+        anyhow::bail!("Name, URL, username and password file are required");
     }
+
+    let password = read_secret(&args.password_file)?;
 
     let provider = Provider {
         name: args.name.clone(),
         url: args.url,
         port: args.port,
         username: args.username,
-        password: args.password,
+        password,
         inbox_label: args.inbox_label,
         sent_label: args.sent_label,
     };

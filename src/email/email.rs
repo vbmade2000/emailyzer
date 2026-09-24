@@ -16,6 +16,7 @@ use crate::{
     MailboxesArgs, ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs, SyncArgs,
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager, DatabaseOperations},
     email::{Email, ReceiverStats, SenderStats},
+    util::read_secret,
 };
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
@@ -891,8 +892,10 @@ async fn _get_mailboxes(
 pub async fn get_provider_mailboxes(args: MailboxesArgs) -> anyhow::Result<()> {
     info!("Fetching mailboxes from {}", args.url);
 
+    let password = read_secret(&args.password_file)?;
+
     let client = get_client(&args.url, args.port).await?;
-    let mut session = get_session(&args.username, &args.password, client).await?;
+    let mut session = get_session(&args.username, &password, client).await?;
 
     let mailboxes = _get_mailboxes(&mut session).await?;
 

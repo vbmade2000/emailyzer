@@ -15,6 +15,7 @@ use crate::{
 mod database;
 mod email;
 mod providers;
+mod util;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -112,9 +113,10 @@ pub struct MailboxesArgs {
     /// Username
     #[arg(short = 'e', long, value_name = "USERNAME")]
     pub username: String,
-    /// Password
-    #[arg(short = 'w', long, value_name = "PASSWORD")]
-    pub password: String,
+    /// File containing the password, or '-' to read it from stdin. Avoid passing passwords
+    /// directly as flag values, since they can leak into shell history and process listings.
+    #[arg(short = 'w', long, value_name = "FILE")]
+    pub password_file: String,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -131,9 +133,10 @@ pub struct AddProviderArgs {
     /// Username
     #[arg(short = 'e', long, value_name = "USERNAME")]
     pub username: String,
-    /// Password
-    #[arg(short = 'w', long, value_name = "PASSWORD")]
-    pub password: String,
+    /// File containing the password, or '-' to read it from stdin. Avoid passing passwords
+    /// directly as flag values, since they can leak into shell history and process listings.
+    #[arg(short = 'w', long, value_name = "FILE")]
+    pub password_file: String,
     /// Mailbox/label name for the inbox, e.g. "INBOX" for Gmail.
     #[arg(short = 'i', long, value_name = "INBOX_LABEL")]
     pub inbox_label: String,
