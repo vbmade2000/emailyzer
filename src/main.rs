@@ -26,7 +26,13 @@ mod types;
 )]
 struct Cli {
     /// Path to the log file
-    #[arg(short, long, value_name = "FILE", global = true)]
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        global = true,
+        default_value = "emailyzer.log"
+    )]
     pub log_file: Option<PathBuf>,
 
     #[command(subcommand)]
