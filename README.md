@@ -1,3 +1,5 @@
+[![CI](https://github.com/vbmade2000/emailyzer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vbmade2000/emailyzer/actions/workflows/ci.yml)
+
 # emailyzer
 Simple yet effective email analyzer
 
