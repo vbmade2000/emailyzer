@@ -44,6 +44,29 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
         anyhow::bail!("Name is required");
     }
 
+    if !args.force {
+        use std::io::IsTerminal;
+
+        if !std::io::stdin().is_terminal() {
+            anyhow::bail!(
+                "Refusing to delete provider '{}' without confirmation. Pass --force to skip the prompt.",
+                args.name
+            );
+        }
+
+        let confirmed = inquire::Confirm::new(&format!(
+            "Are you sure you want to delete provider '{}'?",
+            args.name
+        ))
+        .with_default(false)
+        .prompt()?;
+
+        if !confirmed {
+            println!("Aborted");
+            return Ok(());
+        }
+    }
+
     let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
     let rows_affected = db_manager.delete_provider(args.name.clone()).await?;
 

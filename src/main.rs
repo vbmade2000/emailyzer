@@ -150,6 +150,9 @@ pub struct DeleteProviderArgs {
     /// Name of the provider
     #[arg(short, long, value_name = "NAME")]
     pub name: String,
+    /// Skip the confirmation prompt
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Args, Clone, Debug)]
