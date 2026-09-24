@@ -15,7 +15,6 @@ use crate::{
 mod database;
 mod email;
 mod providers;
-mod types;
 
 #[derive(Parser, Debug)]
 #[command(

@@ -1,10 +1,10 @@
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use tracing::info;
 
+use super::types::Provider;
 use crate::{
     AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs,
-    database::{DatabaseLocation, DatabaseManager},
-    types::{DATABASE_URL, Provider},
+    database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
 };
 
 /// Add a new provider

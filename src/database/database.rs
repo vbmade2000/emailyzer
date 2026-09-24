@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
-use crate::types::{DEFAULT_PROVIDER_KEY, Email, Provider, ReceiverStats, SenderStats};
+use crate::email::{Email, ReceiverStats, SenderStats};
+use crate::providers::Provider;
+use crate::{database::DatabaseLocation, email::types::DEFAULT_PROVIDER_KEY};
 use sqlx::{
     Row as _,
     sqlite::{
@@ -8,18 +10,6 @@ use sqlx::{
     },
 };
 use tracing::{debug, info};
-
-/// Where a `DatabaseManager` should open its SQLite connection.
-#[allow(dead_code)]
-pub enum DatabaseLocation<'a> {
-    /// A database file on disk at the given path.
-    File(&'a str),
-    /// An in-memory database, useful for unit tests: it's isolated per-instance, requires no
-    /// filesystem access/cleanup, and disappears once the `DatabaseManager` (and its pool) is
-    /// dropped.
-    #[cfg(test)]
-    Memory,
-}
 
 pub struct DatabaseManager {
     conn: SqlitePool,

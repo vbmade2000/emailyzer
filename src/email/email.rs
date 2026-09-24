@@ -14,8 +14,8 @@ use tracing::{debug, info};
 
 use crate::{
     MailboxesArgs, ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs, SyncArgs,
-    database::{DatabaseLocation, DatabaseManager},
-    types::{DATABASE_URL, DatabaseOperations, Email, ReceiverStats, SenderStats},
+    database::{DATABASE_URL, DatabaseLocation, DatabaseManager, DatabaseOperations},
+    email::{Email, ReceiverStats, SenderStats},
 };
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
