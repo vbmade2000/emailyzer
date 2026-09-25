@@ -16,6 +16,7 @@ use crate::{
     MailboxesArgs, ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs, SyncArgs,
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager, DatabaseOperations},
     email::{Email, ReceiverStats, SenderStats},
+    password_store::get_password,
     util::read_secret,
 };
 
@@ -527,6 +528,7 @@ pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
     }
 
     let provider = db_manager.get_provider_data(provider.clone()).await?;
+    let provider_password = get_password(provider.id)?;
 
     info!("Syncing emails from {}", provider.name);
 
@@ -540,7 +542,7 @@ pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
         provider.url.clone(),
         provider.port,
         provider.username.clone(),
-        provider.password.clone(),
+        provider_password.clone(),
         provider.inbox_label.clone(),
         provider.name.clone(),
         db_sender.clone(),
@@ -549,7 +551,7 @@ pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
         provider.url.clone(),
         provider.port,
         provider.username.clone(),
-        provider.password.clone(),
+        provider_password.clone(),
         provider.sent_label.clone(),
         provider.name.clone(),
         db_sender,

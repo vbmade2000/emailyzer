@@ -294,26 +294,41 @@ impl DatabaseManager {
         Ok(receivers)
     }
 
-    /// Create an entry in "providers" database table
-    pub async fn create_provider(&self, provider: Provider) -> anyhow::Result<()> {
+    /// Create an entry in "providers" database table.
+    ///
+    /// Returns the newly-assigned `id`, so callers can use it as the key for storing the
+    /// provider's password in the system keyring.
+    pub async fn create_provider(&self, provider: Provider) -> anyhow::Result<i64> {
         let mut conn = self.conn.acquire().await?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
-                INSERT INTO providers (provider_name, imap_server_url, imap_server_port, username, passwd, inbox_label, sent_label) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO providers (provider_name, imap_server_url, imap_server_port, username, inbox_label, sent_label) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             "#,
         )
-        .bind(provider.name)
+        .bind(provider.name.clone())
         .bind(provider.url)
         .bind(provider.port)
         .bind(provider.username)
-        .bind(provider.password)
         .bind(provider.inbox_label)
         .bind(provider.sent_label)
         .execute(&mut *conn)
         .await?;
 
-        Ok(())
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Get the `id` of a provider by name, if it exists. Used by callers that need the id as
+    /// the key for the provider's password in the system keyring (e.g. before deleting it).
+    pub async fn get_provider_id(&self, name: String) -> anyhow::Result<Option<i64>> {
+        let mut conn = self.conn.acquire().await?;
+
+        let result = sqlx::query("SELECT id FROM providers WHERE provider_name = ?1")
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await?;
+
+        Ok(result.map(|row| row.get::<i64, _>(0)))
     }
 
     /// Delete an entry from "providers" database table.
@@ -357,17 +372,17 @@ impl DatabaseManager {
         let mut conn = self.conn.acquire().await?;
 
         let providers = sqlx::query(
-            r#"SELECT provider_name, imap_server_url, imap_server_port, username, inbox_label, sent_label FROM providers"#,
+            r#"SELECT id, provider_name, imap_server_url, imap_server_port, username, inbox_label, sent_label FROM providers"#,
         )
         .try_map(|row: sqlx::sqlite::SqliteRow| {
             let provider = Provider {
+                id: row.try_get("id")?,
                 name: row.try_get("provider_name")?,
                 url: row.try_get("imap_server_url")?,
                 port: row.try_get("imap_server_port")?,
                 username: row.try_get("username")?,
                 inbox_label: row.try_get("inbox_label")?,
                 sent_label: row.try_get("sent_label")?,
-                ..Default::default()
             };
             Ok(provider)
         })
@@ -419,15 +434,15 @@ impl DatabaseManager {
         let mut conn = self.conn.acquire().await?;
 
         let provider: Provider =
-            sqlx::query(r#"SELECT imap_server_url, imap_server_port, username, passwd, inbox_label, sent_label FROM providers where provider_name = ?1"#)
+            sqlx::query(r#"SELECT id, imap_server_url, imap_server_port, username, inbox_label, sent_label FROM providers where provider_name = ?1"#)
                 .bind(provider.clone())
                 .try_map(|row: sqlx::sqlite::SqliteRow| {
                     let provider = Provider {
+                            id: row.try_get("id")?,
                             name: provider.clone(),
                             url: row.try_get("imap_server_url")?,
                             port: row.try_get("imap_server_port")?,
                             username: row.try_get("username")?,
-                            password: row.try_get("passwd")?,
                             inbox_label: row.try_get("inbox_label")?,
                             sent_label: row.try_get("sent_label")?,
                         };

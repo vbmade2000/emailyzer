@@ -57,7 +57,6 @@ CREATE TABLE providers
     imap_server_url TEXT NOT NULL,
     imap_server_port INTEGER NOT NULL,
     username TEXT NOT NULL,
-    passwd TEXT NOT NULL,
     inbox_label TEXT NOT NULL DEFAULT 'INBOX',
     sent_label TEXT NOT NULL DEFAULT '[Gmail]/Sent Mail'
 );

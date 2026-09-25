@@ -14,6 +14,7 @@ use crate::{
 
 mod database;
 mod email;
+mod password_store;
 mod providers;
 mod util;
 

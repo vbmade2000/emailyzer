@@ -1,10 +1,11 @@
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
-use tracing::info;
+use tracing::{debug, info};
 
 use super::types::Provider;
 use crate::{
     AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs,
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
+    password_store::{delete_password, store_password},
     util::read_secret,
 };
 
@@ -21,17 +22,33 @@ pub async fn add_provider(args: AddProviderArgs) -> anyhow::Result<()> {
     let password = read_secret(&args.password_file)?;
 
     let provider = Provider {
+        id: 0, // Ignored on insert; the database assigns the real id.
         name: args.name.clone(),
         url: args.url,
         port: args.port,
         username: args.username,
-        password,
         inbox_label: args.inbox_label,
         sent_label: args.sent_label,
     };
 
     let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
-    db_manager.create_provider(provider).await?;
+    let provider_id = db_manager.create_provider(provider).await?;
+    debug!("Provider {} added to database", args.name);
+
+    // Store password in keyring, keyed by the provider's stable id (not its mutable name).
+    // Roll back the database insert if this fails, so we don't leave a provider with no
+    // stored password behind.
+    if let Err(e) = store_password(provider_id, &password) {
+        if let Err(rollback_err) = db_manager.delete_provider(args.name.clone()).await {
+            tracing::warn!(
+                "Failed to store password for provider '{}', and failed to roll back its database entry: {}. \
+                 The provider was left in the database with no stored password; delete it manually with `providers delete --force`.",
+                args.name,
+                rollback_err
+            );
+        }
+        return Err(e);
+    }
 
     info!("Provider {} added successfully", &args.name);
 
@@ -82,10 +99,26 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Fetch the id before deleting the row, since it's needed to look up the keyring entry.
+    let provider_id = db_manager.get_provider_id(args.name.clone()).await?;
+
     let rows_affected = db_manager.delete_provider(args.name.clone()).await?;
 
     if rows_affected == 0 {
         anyhow::bail!("Provider '{}' not found", args.name);
+    }
+
+    // Delete password from keyring. The database row is already gone at this point, so treat
+    // a failure here as non-fatal (log only) rather than leaving the user with a provider that
+    // looks half-deleted.
+    if let Some(provider_id) = provider_id
+        && let Err(e) = delete_password(provider_id)
+    {
+        tracing::warn!(
+            "Provider '{}' deleted, but failed to remove its password from the keyring: {}",
+            args.name,
+            e
+        );
     }
 
     info!("Provider {} deleted successfully", &args.name);
