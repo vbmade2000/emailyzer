@@ -71,8 +71,6 @@ pub async fn delete_provider(
         .await?;
 
     if !args.force {
-        use std::io::IsTerminal;
-
         let warning = if email_count > 0 {
             format!(
                 "Warning: this will also permanently delete {} email(s) associated with provider '{}'. ",
@@ -82,7 +80,7 @@ pub async fn delete_provider(
             String::new()
         };
 
-        if !std::io::stdin().is_terminal() {
+        if !crate::util::is_stdin_interactive() {
             anyhow::bail!(
                 "{}Refusing to delete provider '{}' without confirmation. Pass --force to skip the prompt.",
                 warning,
