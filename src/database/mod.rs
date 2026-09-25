@@ -1,5 +1,6 @@
 #[allow(clippy::module_inception)]
 pub mod database;
+pub mod tests;
 pub mod types;
 
 pub use database::DatabaseManager;
