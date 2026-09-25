@@ -1,43 +1,59 @@
 #[cfg(test)]
-mod password_store_tests {
+pub(crate) mod password_store_tests {
     use keyring_core::mock;
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicI64, Ordering},
-    };
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use tokio::sync::{Mutex, MutexGuard};
 
     use crate::password_store::{
         SERVICE_NAME, delete_password, entry_for, get_password, store_password,
     };
 
-    /// Serializes the tests in this module: the credential store is process-global,
-    /// so each test takes this lock and installs a fresh mock store to stay hermetic
-    /// (isolated from the real OS keyring and from other tests).
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes the tests in this module (and any other test module that touches the
+    /// process-global credential store, e.g. `providers::tests`): each test takes this
+    /// lock and installs a fresh mock store to stay hermetic (isolated from the real OS
+    /// keyring and from other tests).
+    ///
+    /// A `tokio::sync::Mutex` is used (instead of `std::sync::Mutex`) so the guard can be
+    /// held across `.await` points in `#[tokio::test]`s (e.g. in `providers::tests`)
+    /// without tripping Clippy's `await_holding_lock` lint, which is specifically about
+    /// std's non-async-aware mutex.
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     /// Generates provider ids far away from real database rowids so tests can never
     /// collide with real stored passwords, even if the mock setup were bypassed.
     static NEXT_ID: AtomicI64 = AtomicI64::new(1_000_000_000);
 
-    fn next_provider_id() -> i64 {
+    pub(crate) fn next_provider_id() -> i64 {
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Install a fresh in-memory mock credential store. The returned guard keeps
-    /// the tests serialized and must be held for the whole test.
-    fn setup() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    /// Installs a fresh in-memory mock credential store, for use by synchronous (`#[test]`)
+    /// tests. The returned guard keeps the tests serialized and must be held for the whole
+    /// test.
+    pub(crate) fn setup() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.blocking_lock();
+        install_mock_store();
+        guard
+    }
+
+    /// Async equivalent of `setup()`, for use by `#[tokio::test]` tests (e.g. in
+    /// `providers::tests`), where `blocking_lock()` would panic since it can't be called
+    /// from within a Tokio runtime.
+    pub(crate) async fn setup_async() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().await;
+        install_mock_store();
+        guard
+    }
+
+    fn install_mock_store() {
         // Force the one-time platform store initialization *before* installing the
         // mock, so the platform init can never overwrite the mock afterwards.
         let _ = keyring::Entry::store_status();
         keyring_core::set_default_store(mock::Store::new().expect("mock store installs"));
-        guard
     }
 
     /// Inject a one-shot error into the mock credential backing `provider_id`.
-    fn inject_error(provider_id: i64, error: keyring::Error) {
+    pub(crate) fn inject_error(provider_id: i64, error: keyring::Error) {
         let entry = entry_for(provider_id).expect("entry builds on mock store");
         let cred = entry
             .as_any()
