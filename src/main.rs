@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 use crate::{
+    database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
     email::{get_provider_mailboxes, get_receiver_stats, get_sender_stats, sync_emails},
     providers::{add_provider, delete_provider, list_providers, set_default_provider},
 };
@@ -195,30 +196,32 @@ async fn main() -> anyhow::Result<()> {
 
     set_tracing(cli.log_file)?;
 
+    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+
     let commands = cli.command;
     match commands {
         Commands::Sync(syncargs) => {
-            sync_emails(syncargs).await?;
+            sync_emails(syncargs, &db_manager).await?;
             println!("Sync completed successfully \n");
         }
         Commands::Senders(sendersargs) => {
-            get_sender_stats(sendersargs).await?;
+            get_sender_stats(sendersargs, &db_manager).await?;
         }
         Commands::Receivers(receiversargs) => {
-            get_receiver_stats(receiversargs).await?;
+            get_receiver_stats(receiversargs, &db_manager).await?;
         }
         Commands::Providers(providerargs) => match providerargs.subcommand {
             ProviderSubcommand::Add(add_provider_args) => {
-                add_provider(add_provider_args).await?;
+                add_provider(add_provider_args, &db_manager).await?;
             }
             ProviderSubcommand::Delete(delete_provider_args) => {
-                delete_provider(delete_provider_args).await?;
+                delete_provider(delete_provider_args, &db_manager).await?;
             }
             ProviderSubcommand::List => {
-                list_providers().await?;
+                list_providers(&db_manager).await?;
             }
             ProviderSubcommand::Default(default_provider_args) => {
-                set_default_provider(default_provider_args).await?;
+                set_default_provider(default_provider_args, &db_manager).await?;
             }
             ProviderSubcommand::Mailboxes(mailboxes_args) => {
                 get_provider_mailboxes(mailboxes_args).await?;

@@ -4,13 +4,16 @@ use tracing::{debug, info};
 use super::types::Provider;
 use crate::{
     AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs,
-    database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
+    database::DatabaseManager,
     password_store::{delete_password, store_password},
     util::read_secret,
 };
 
 /// Add a new provider
-pub async fn add_provider(args: AddProviderArgs) -> anyhow::Result<()> {
+pub async fn add_provider(
+    args: AddProviderArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
     if args.name.is_empty()
         || args.url.is_empty()
         || args.username.is_empty()
@@ -31,7 +34,6 @@ pub async fn add_provider(args: AddProviderArgs) -> anyhow::Result<()> {
         sent_label: args.sent_label,
     };
 
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
     let provider_id = db_manager.create_provider(provider).await?;
     debug!("Provider {} added to database", args.name);
 
@@ -56,12 +58,14 @@ pub async fn add_provider(args: AddProviderArgs) -> anyhow::Result<()> {
 }
 
 /// Delete a provider
-pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
+pub async fn delete_provider(
+    args: DeleteProviderArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
     if args.name.is_empty() {
         anyhow::bail!("Name is required");
     }
 
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
     let email_count = db_manager
         .count_emails_for_provider(args.name.clone())
         .await?;
@@ -127,8 +131,7 @@ pub async fn delete_provider(args: DeleteProviderArgs) -> anyhow::Result<()> {
 }
 
 /// List all configured providers
-pub async fn list_providers() -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
+pub async fn list_providers(db_manager: &DatabaseManager) -> anyhow::Result<()> {
     let providers = db_manager.read_providers().await?;
 
     if providers.is_empty() {
@@ -171,14 +174,16 @@ pub async fn list_providers() -> anyhow::Result<()> {
 }
 
 /// Set default provider
-pub async fn set_default_provider(args: DefaultProviderArgs) -> anyhow::Result<()> {
+pub async fn set_default_provider(
+    args: DefaultProviderArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
     let provider_name = args.name;
 
     if provider_name.is_empty() {
         anyhow::bail!("Name is required");
     }
 
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
     let provider_exists = db_manager.provider_exists(provider_name.clone()).await?;
 
     if !provider_exists {

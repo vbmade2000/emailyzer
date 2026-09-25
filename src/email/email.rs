@@ -508,9 +508,7 @@ fn spawn_fetch_task(
 }
 
 /// Fetches emails from the provider and stores in database
-pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
-
+pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> anyhow::Result<()> {
     let provider = if let Some(provider) = syncargs.provider {
         provider
     } else {
@@ -572,9 +570,10 @@ pub async fn sync_emails(syncargs: SyncArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
-
+pub async fn get_sender_stats(
+    sendersargs: SendersArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
     // Prepare table for display
     let mut table = Table::new();
     table.set_header(vec![
@@ -723,9 +722,10 @@ pub async fn get_sender_stats(sendersargs: SendersArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn get_receiver_stats(receiversargs: ReceiversArgs) -> anyhow::Result<()> {
-    let db_manager = DatabaseManager::new(DatabaseLocation::File(DATABASE_URL)).await?;
-
+pub async fn get_receiver_stats(
+    receiversargs: ReceiversArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
     // Prepare table for display
     let mut table = Table::new();
     table.set_header(vec![
