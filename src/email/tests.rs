@@ -492,3 +492,267 @@ mod stats_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod receiver_stats_tests {
+    use crate::database::{DatabaseLocation, DatabaseManager};
+    use crate::email::stats::get_receiver_stats;
+    use crate::email::types::Email;
+    use crate::providers::Provider;
+    use crate::{ReceiverSortBy, ReceiversArgs};
+
+    /// Fresh isolated database per test: each in-memory SQLite instance is private to its
+    /// single-connection pool and disappears when the manager is dropped, so no locking or
+    /// cleanup is needed.
+    async fn test_db() -> DatabaseManager {
+        DatabaseManager::new(DatabaseLocation::Memory)
+            .await
+            .expect("in-memory test database")
+    }
+
+    fn make_provider(name: &str) -> Provider {
+        Provider {
+            id: 0,
+            name: name.to_string(),
+            url: "imap.example.com".to_string(),
+            port: 993,
+            username: "user@example.com".to_string(),
+            inbox_label: "inbox".to_string(),
+            sent_label: "sent".to_string(),
+        }
+    }
+
+    async fn seed_provider(db: &DatabaseManager, name: &str) -> i64 {
+        db.create_provider(make_provider(name))
+            .await
+            .expect("seed provider")
+    }
+
+    // `get_receiver_stats` aggregates from the (lowercased) sent label, so seeded emails use
+    // `label: "sent"` here, unlike `make_email` in `stats_tests` which uses `"inbox"`.
+    fn make_email(uid: u32, receiver: &str, read: bool, attachment: i16, provider: &str) -> Email {
+        Email {
+            uid,
+            subject: format!("Subject {uid}"),
+            sender: "alice@example.com".to_string(),
+            read_status: read,
+            receiver: receiver.to_string(),
+            attachment,
+            timestamp: "Mon, 1 Jan 2024 00:00:00 +0000".to_string(),
+            body: "".to_string(),
+            label: "sent".to_string(),
+            provider: provider.to_string(),
+        }
+    }
+
+    fn receivers_args(provider: Option<&str>, refresh: bool) -> ReceiversArgs {
+        ReceiversArgs {
+            refresh,
+            receiver: Vec::new(),
+            sort_by: None,
+            top: None,
+            provider: provider.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn fails_when_no_provider_specified_and_no_default_set() {
+        let db = test_db().await;
+        let result = get_receiver_stats(receivers_args(None, false), &db).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fails_when_provider_not_found() {
+        let db = test_db().await;
+        let result = get_receiver_stats(receivers_args(Some("missing"), false), &db).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn refresh_aggregates_emails_and_persists_receiver_stats() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+
+        db.create_email_entry(make_email(1, "bob@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+        db.create_email_entry(make_email(2, "bob@example.com", false, 0, "gmail"))
+            .await
+            .unwrap();
+        db.create_email_entry(make_email(3, "dave@example.com", true, 0, "gmail"))
+            .await
+            .unwrap();
+
+        get_receiver_stats(receivers_args(Some("gmail"), true), &db)
+            .await
+            .unwrap();
+
+        let stats = db
+            .read_receiver_email_stats("gmail".to_string())
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 2);
+
+        let bob = stats
+            .iter()
+            .find(|s| s.receiver == "bob@example.com")
+            .expect("bob stats present");
+        assert_eq!(bob.total_emails, 2);
+        assert_eq!(bob.read_emails, 1);
+        assert_eq!(bob.unread_emails, 1);
+        assert_eq!(bob.attachment_count, 1);
+        assert_eq!(bob.no_attachment_count, 1);
+
+        let dave = stats
+            .iter()
+            .find(|s| s.receiver == "dave@example.com")
+            .expect("dave stats present");
+        assert_eq!(dave.total_emails, 1);
+        assert_eq!(dave.read_emails, 1);
+        assert_eq!(dave.no_attachment_count, 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_overwrites_previously_persisted_stats() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+
+        db.create_email_entry(make_email(1, "bob@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+        get_receiver_stats(receivers_args(Some("gmail"), true), &db)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.read_receiver_email_stats("gmail".to_string())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A second email to a different receiver arrives; re-running with --refresh should
+        // replace the stale stats rather than accumulate on top of them.
+        db.create_email_entry(make_email(2, "erin@example.com", false, 0, "gmail"))
+            .await
+            .unwrap();
+        get_receiver_stats(receivers_args(Some("gmail"), true), &db)
+            .await
+            .unwrap();
+
+        let stats = db
+            .read_receiver_email_stats("gmail".to_string())
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn without_refresh_reads_existing_stats_without_erroring() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+        db.create_receiver_email_stats_entry(
+            "bob@example.com".to_string(),
+            5,
+            3,
+            2,
+            1,
+            4,
+            "gmail".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let result = get_receiver_stats(receivers_args(Some("gmail"), false), &db).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn without_refresh_and_no_existing_stats_is_ok() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+
+        let result = get_receiver_stats(receivers_args(Some("gmail"), false), &db).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn uses_default_provider_when_none_specified() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+        db.set_default_provider("gmail".to_string()).await.unwrap();
+        db.create_email_entry(make_email(1, "bob@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+
+        let result = get_receiver_stats(receivers_args(None, true), &db).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            db.read_receiver_email_stats("gmail".to_string())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_scopes_stats_to_requested_provider() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+        seed_provider(&db, "outlook").await;
+
+        db.create_email_entry(make_email(1, "bob@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+        db.create_email_entry(make_email(2, "frank@example.com", true, 0, "outlook"))
+            .await
+            .unwrap();
+
+        get_receiver_stats(receivers_args(Some("gmail"), true), &db)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.read_receiver_email_stats("gmail".to_string())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            db.read_receiver_email_stats("outlook".to_string())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn works_with_sort_by_and_top_flags_set() {
+        let db = test_db().await;
+        seed_provider(&db, "gmail").await;
+        db.create_email_entry(make_email(1, "bob@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+        db.create_email_entry(make_email(2, "carol@example.com", true, 1, "gmail"))
+            .await
+            .unwrap();
+
+        let mut args = receivers_args(Some("gmail"), true);
+        args.sort_by = Some(ReceiverSortBy::Emails);
+        args.top = Some(1);
+
+        let result = get_receiver_stats(args, &db).await;
+        assert!(result.is_ok());
+        // Persistence is unaffected by display-only sort/top flags.
+        assert_eq!(
+            db.read_receiver_email_stats("gmail".to_string())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+}
