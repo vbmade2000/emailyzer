@@ -8,7 +8,10 @@ use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use imap::{Client, Session, types::Fetch};
 use imap_proto::types::{BodyStructure, ContentDisposition};
 use native_tls::{TlsConnector, TlsStream};
-use tokio::{sync::mpsc::channel, task::JoinHandle};
+use tokio::{
+    sync::{mpsc::channel, watch},
+    task::JoinHandle,
+};
 use tokio_imap::types::{Address, Envelope};
 use tracing::{debug, info};
 
@@ -30,6 +33,31 @@ pub(crate) async fn get_tls_connector() -> anyhow::Result<TlsConnector> {
 /// (`examine`, `uid_fetch`, etc.) can hang indefinitely if Gmail stops responding without
 /// actively closing the connection, instead of surfacing as a retryable error.
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Shared signal used to implement graceful shutdown. All long-running tasks spawned by
+/// `sync_emails` (the database writer task and the per-mailbox fetch/attachment tasks) hold a
+/// clone of the receiver and check it after finishing the record (email/batch/etc.) they're
+/// currently working on. If it has flipped to `true`, the task stops picking up new work and
+/// exits cleanly instead of being killed mid-record.
+pub(crate) type ShutdownSignal = watch::Receiver<bool>;
+
+/// Returns `true` once a shutdown has been requested (e.g. via Ctrl+C).
+fn shutdown_requested(shutdown: &ShutdownSignal) -> bool {
+    *shutdown.borrow()
+}
+
+/// Spawns a task that waits for a Ctrl+C (SIGINT) signal and, once received, flips the shared
+/// shutdown flag so every task sharing `shutdown_tx` finishes its current record and exits.
+fn spawn_shutdown_listener(shutdown_tx: watch::Sender<bool>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!(
+                "Shutdown signal received. Finishing in-flight records before exiting. Press Ctrl+C again to force quit."
+            );
+            let _ = shutdown_tx.send(true);
+        }
+    })
+}
 
 /// Create a client to connect to Gmail
 /// 1. Resolve `domain`/`port` and open a `TcpStream` with read/write timeouts set, so a stalled
@@ -200,6 +228,7 @@ async fn fetch_attachments_by_uid(
     username: &str,
     password: &str,
     connection_label: &str,
+    shutdown: &ShutdownSignal,
 ) -> HashMap<u32, i16> {
     let mut result = HashMap::with_capacity(uids.len());
     let total_batches = uids.len().div_ceil(ATTACHMENT_FETCH_BATCH_SIZE);
@@ -273,6 +302,14 @@ async fn fetch_attachments_by_uid(
             total_batches,
             mailbox
         );
+
+        if shutdown_requested(shutdown) {
+            info!(
+                "[{}] Shutdown requested by user: finished current attachment batch for {}, stopping before remaining batches",
+                connection_label, mailbox
+            );
+            break;
+        }
     }
 
     result
@@ -301,6 +338,7 @@ async fn fetch_attachments_parallel(
     password: String,
     mailbox: String,
     uids: Vec<u32>,
+    shutdown: ShutdownSignal,
 ) -> HashMap<u32, i16> {
     if uids.is_empty() {
         return HashMap::new();
@@ -317,6 +355,7 @@ async fn fetch_attachments_parallel(
         let domain = domain.clone();
         let mailbox = mailbox.clone();
         let connection_label = format!("conn {}/{}", connection_index + 1, connections);
+        let shutdown = shutdown.clone();
 
         handles.push(tokio::spawn(async move {
             let client = get_client(&domain, port).await?;
@@ -332,6 +371,7 @@ async fn fetch_attachments_parallel(
                 &username,
                 &password,
                 &connection_label,
+                &shutdown,
             )
             .await;
 
@@ -372,6 +412,7 @@ async fn fetch_attachments_parallel(
 /// and dropped its clone.
 fn spawn_db_writer_task(
     mut db_receiver: tokio::sync::mpsc::Receiver<DatabaseOperations>,
+    shutdown: ShutdownSignal,
 ) -> JoinHandle<anyhow::Result<()>> {
     tokio::spawn(async move {
         info!("Spawning database writer task");
@@ -383,6 +424,13 @@ fn spawn_db_writer_task(
         while let Some(DatabaseOperations::CreateEmailEntry(email)) = db_receiver.recv().await {
             debug!("DatabaseWriter: Creating email entry");
             db_manager.create_email_entry(email).await?;
+
+            if shutdown_requested(&shutdown) {
+                info!(
+                    "Shutdown requested by user: database writer task finished current record and is exiting"
+                );
+                break;
+            }
         }
 
         info!("Stopping database writer task");
@@ -399,6 +447,7 @@ fn spawn_db_writer_task(
 /// `BODYSTRUCTURE` metadata, so no extra per-message round-trip is needed) before sending each
 /// fully-formed `Email` over `db_sender`. Once done, drops its `db_sender` clone so the writer
 /// task's channel can close once every fetch task sharing it has finished.
+#[allow(clippy::too_many_arguments)]
 fn spawn_fetch_task(
     domain: String,
     port: u16,
@@ -407,6 +456,7 @@ fn spawn_fetch_task(
     mailbox: String,
     provider_name: String,
     db_sender: tokio::sync::mpsc::Sender<DatabaseOperations>,
+    shutdown: ShutdownSignal,
 ) -> JoinHandle<anyhow::Result<()>> {
     info!("Spawning fetch task for {}", mailbox);
 
@@ -439,6 +489,7 @@ fn spawn_fetch_task(
             password.clone(),
             mailbox.clone(),
             uids,
+            shutdown.clone(),
         )
         .await;
         info!("Attachment fetching done for {}", mailbox);
@@ -482,6 +533,14 @@ fn spawn_fetch_task(
                 // exited (most likely due to an error). The caller awaits that task separately
                 // and surfaces its real underlying error instead of this generic one.
                 anyhow::bail!("Database writer task exited unexpectedly");
+            }
+
+            if shutdown_requested(&shutdown) {
+                info!(
+                    "Shutdown requested by user: fetch task for {} finished current record and is exiting",
+                    mailbox
+                );
+                break;
             }
         }
 
@@ -537,8 +596,13 @@ pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> an
     // 100 is the buffer size. It means that the sender can send 100 messages before it blocks.
     // Our producer has network round-trip to Gmail and so it is relatively slow compare to consumer
     // so buffer size of 100 is more than enough.
+    // Shared shutdown signal: flips to `true` once Ctrl+C is pressed, so every task below
+    // finishes the record it's currently on and exits instead of being killed mid-record.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_listener_task = spawn_shutdown_listener(shutdown_tx);
+
     let (db_sender, db_receiver) = channel(500);
-    let db_task = spawn_db_writer_task(db_receiver);
+    let db_task = spawn_db_writer_task(db_receiver, shutdown_rx.clone());
     let inbox_fetch_task = spawn_fetch_task(
         provider.url.clone(),
         provider.port,
@@ -547,6 +611,7 @@ pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> an
         provider.inbox_label.clone(),
         provider.name.clone(),
         db_sender.clone(),
+        shutdown_rx.clone(),
     );
     let sent_emails_fetch_task = spawn_fetch_task(
         provider.url.clone(),
@@ -556,6 +621,7 @@ pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> an
         provider.sent_label.clone(),
         provider.name.clone(),
         db_sender,
+        shutdown_rx,
     );
 
     // Await both concurrently-running tasks. Prefer surfacing the writer task's error (if any)
@@ -563,6 +629,7 @@ pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> an
     // "channel closed" message caused by the writer task exiting first.
     let (inbox_fetch_result, db_result, sent_emails_fetch_result) =
         tokio::join!(inbox_fetch_task, db_task, sent_emails_fetch_task);
+    shutdown_listener_task.abort();
     db_result??;
     inbox_fetch_result??;
     sent_emails_fetch_result??;
