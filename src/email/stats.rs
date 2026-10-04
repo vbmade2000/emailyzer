@@ -7,30 +7,228 @@ use crate::{
     ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs,
     database::DatabaseManager,
     email::types::{Email, ReceiverStats, SenderStats},
+    providers::Provider,
 };
 
-pub async fn get_sender_stats(
-    sendersargs: SendersArgs,
+/// How to order rows before an optional `--top N` truncation. Both `senders`/`receivers`
+/// commands expose the same two choices (by email count, or alphabetically by the row's key),
+/// just under differently-named CLI enums (`SenderSortBy`/`ReceiverSortBy`).
+enum SortField {
+    Emails,
+    Key,
+}
+
+impl From<SenderSortBy> for SortField {
+    fn from(value: SenderSortBy) -> Self {
+        match value {
+            SenderSortBy::Emails => SortField::Emails,
+            SenderSortBy::Sender => SortField::Key,
+        }
+    }
+}
+
+impl From<ReceiverSortBy> for SortField {
+    fn from(value: ReceiverSortBy) -> Self {
+        match value {
+            ReceiverSortBy::Emails => SortField::Emails,
+            ReceiverSortBy::Receiver => SortField::Key,
+        }
+    }
+}
+
+/// Common behavior needed to aggregate, persist, and display one row of sender/receiver stats.
+/// Implemented by both `SenderStats` and `ReceiverStats` so `get_stats` can be written once and
+/// shared by `get_sender_stats`/`get_receiver_stats` instead of duplicating the aggregation,
+/// sorting, and table-rendering logic for each.
+trait StatRow: Default {
+    /// Table column / CLI concept name for this row's key, e.g. "Sender" or "Receiver".
+    const HEADER: &'static str;
+
+    /// The mailbox/label stats for this row type are aggregated from, e.g. the inbox for senders
+    /// and the (lowercased) sent label for receivers.
+    fn mailbox_label(provider_data: &Provider) -> String;
+
+    fn key_from_email(email: &Email) -> String;
+    fn key(&self) -> &str;
+    fn set_key(&mut self, key: String);
+    fn total_emails(&self) -> u32;
+    fn record_email(&mut self, email: &Email);
+    fn to_table_row(&self) -> Vec<String>;
+
+    async fn read_existing(
+        db_manager: &DatabaseManager,
+        provider: String,
+    ) -> anyhow::Result<Vec<Self>>
+    where
+        Self: Sized;
+    async fn delete_all(db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()>;
+    async fn persist(&self, db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()>;
+}
+
+impl StatRow for SenderStats {
+    const HEADER: &'static str = "Sender";
+
+    fn mailbox_label(provider_data: &Provider) -> String {
+        provider_data.inbox_label.clone()
+    }
+
+    fn key_from_email(email: &Email) -> String {
+        email.sender.clone()
+    }
+
+    fn key(&self) -> &str {
+        &self.sender
+    }
+
+    fn set_key(&mut self, key: String) {
+        self.sender = key;
+    }
+
+    fn total_emails(&self) -> u32 {
+        self.total_emails
+    }
+
+    fn record_email(&mut self, email: &Email) {
+        self.total_emails += 1;
+        if email.read_status {
+            self.read_emails += 1;
+        } else {
+            self.unread_emails += 1;
+        }
+        if email.attachment == 1 {
+            self.attachment_count += 1;
+        } else {
+            self.no_attachment_count += 1;
+        }
+    }
+
+    fn to_table_row(&self) -> Vec<String> {
+        vec![
+            self.sender.clone(),
+            self.total_emails.to_string(),
+            self.read_emails.to_string(),
+            self.unread_emails.to_string(),
+            self.attachment_count.to_string(),
+            self.no_attachment_count.to_string(),
+        ]
+    }
+
+    async fn read_existing(
+        db_manager: &DatabaseManager,
+        provider: String,
+    ) -> anyhow::Result<Vec<Self>> {
+        db_manager.read_sender_email_stats(provider).await
+    }
+
+    async fn delete_all(db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()> {
+        db_manager
+            .delete_all_sender_email_stats_entries(provider)
+            .await
+    }
+
+    async fn persist(&self, db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()> {
+        db_manager
+            .create_sender_email_stats_entry(
+                self.sender.clone(),
+                self.total_emails,
+                self.read_emails,
+                self.unread_emails,
+                self.attachment_count,
+                self.no_attachment_count,
+                provider,
+            )
+            .await
+    }
+}
+
+impl StatRow for ReceiverStats {
+    const HEADER: &'static str = "Receiver";
+
+    fn mailbox_label(provider_data: &Provider) -> String {
+        provider_data.sent_label.to_lowercase()
+    }
+
+    fn key_from_email(email: &Email) -> String {
+        email.receiver.clone()
+    }
+
+    fn key(&self) -> &str {
+        &self.receiver
+    }
+
+    fn set_key(&mut self, key: String) {
+        self.receiver = key;
+    }
+
+    fn total_emails(&self) -> u32 {
+        self.total_emails
+    }
+
+    fn record_email(&mut self, email: &Email) {
+        self.total_emails += 1;
+        if email.read_status {
+            self.read_emails += 1;
+        } else {
+            self.unread_emails += 1;
+        }
+        if email.attachment == 1 {
+            self.attachment_count += 1;
+        } else {
+            self.no_attachment_count += 1;
+        }
+    }
+
+    fn to_table_row(&self) -> Vec<String> {
+        vec![
+            self.receiver.clone(),
+            self.total_emails.to_string(),
+            self.read_emails.to_string(),
+            self.unread_emails.to_string(),
+            self.attachment_count.to_string(),
+            self.no_attachment_count.to_string(),
+        ]
+    }
+
+    async fn read_existing(
+        db_manager: &DatabaseManager,
+        provider: String,
+    ) -> anyhow::Result<Vec<Self>> {
+        db_manager.read_receiver_email_stats(provider).await
+    }
+
+    async fn delete_all(db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()> {
+        db_manager
+            .delete_all_receiver_email_stats_entries(provider)
+            .await
+    }
+
+    async fn persist(&self, db_manager: &DatabaseManager, provider: String) -> anyhow::Result<()> {
+        db_manager
+            .create_receiver_email_stats_entry(
+                self.receiver.clone(),
+                self.total_emails,
+                self.read_emails,
+                self.unread_emails,
+                self.attachment_count,
+                self.no_attachment_count,
+                provider,
+            )
+            .await
+    }
+}
+
+/// Resolves/validates the provider to use, aggregates or reloads `S` stats (depending on
+/// `refresh`), sorts/truncates them, and prints them as a table. Shared implementation behind
+/// both `get_sender_stats` and `get_receiver_stats`.
+async fn get_stats<S: StatRow>(
+    provider_arg: Option<String>,
+    refresh: bool,
+    preferred_keys: Vec<String>,
+    sort_by: Option<SortField>,
+    top: Option<u8>,
     db_manager: &DatabaseManager,
 ) -> anyhow::Result<()> {
-    // Prepare table for display
-    let mut table = Table::new();
-    table.set_header(vec![
-        "Sender",
-        "Emails",
-        "Read",
-        "Unread",
-        "Attachment",
-        "No Attachment",
-    ]);
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.load_style(UTF8_FULL.with_rounded_corners());
-
-    let preferred_senders = sendersargs.sender;
-
-    let mut rows: Vec<SenderStats> = Vec::new();
-
-    let provider = if let Some(provider) = sendersargs.provider {
+    let provider = if let Some(provider) = provider_arg {
         provider
     } else {
         db_manager
@@ -51,109 +249,97 @@ pub async fn get_sender_stats(
 
     info!("Using provider: {}", provider);
 
-    if sendersargs.refresh {
+    let mut rows: Vec<S> = Vec::new();
+
+    if refresh {
         info!("User has passed --refresh flag. Reading emails from database");
         let provider_data = db_manager.get_provider_data(provider.clone()).await?;
         let emails: Vec<Email> = db_manager
-            .read_emails_from_database(&provider_data.inbox_label, provider.clone())
+            .read_emails_from_database(&S::mailbox_label(&provider_data), provider.clone())
             .await?;
         info!("Fetched {} emails from database", emails.len());
 
-        let mut senders: HashMap<String, SenderStats> = HashMap::new();
+        let mut stats_by_key: HashMap<String, S> = HashMap::new();
 
-        // Count emails sent by each unique sender
+        // Count emails by each unique key (sender/receiver)
         for email in emails {
-            let sender_stat = senders.entry(email.sender.clone()).or_default();
-            sender_stat.sender = email.sender;
-
-            sender_stat.total_emails += 1;
-
-            if email.read_status {
-                sender_stat.read_emails += 1;
-            } else {
-                sender_stat.unread_emails += 1;
-            }
-
-            if email.attachment == 1 {
-                sender_stat.attachment_count += 1;
-            } else {
-                sender_stat.no_attachment_count += 1;
-            }
+            let key = S::key_from_email(&email);
+            let stat = stats_by_key.entry(key.clone()).or_default();
+            stat.set_key(key);
+            stat.record_email(&email);
         }
 
         // Clear database table first to make fresh entries
-        db_manager
-            .delete_all_sender_email_stats_entries(provider.clone())
-            .await?;
+        S::delete_all(db_manager, provider.clone()).await?;
 
         // Save the stats in database because user has used --refresh flag. Also, print records on stdout
-        for (sender, stats) in senders {
-            db_manager
-                .create_sender_email_stats_entry(
-                    sender.clone(),
-                    stats.total_emails,
-                    stats.read_emails,
-                    stats.unread_emails,
-                    stats.attachment_count,
-                    stats.no_attachment_count,
-                    provider.clone(),
-                )
-                .await?;
+        for (key, stat) in stats_by_key {
+            stat.persist(db_manager, provider.clone()).await?;
 
-            // We show only records from preferred senders if user has passed --sender flag
-            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender) {
+            // We show only records from preferred keys if user has passed the corresponding filter flag
+            if !preferred_keys.is_empty() && !preferred_keys.contains(&key) {
                 continue;
             }
 
-            rows.push(stats);
+            rows.push(stat);
         }
     } else {
-        info!("User has skipped --refresh flag. Reading existing sender email stats from database");
-        let senders_stats = db_manager.read_sender_email_stats(provider).await?;
+        info!(
+            "User has skipped --refresh flag. Reading existing {} email stats from database",
+            S::HEADER.to_lowercase()
+        );
+        let existing_stats = S::read_existing(db_manager, provider).await?;
 
-        if senders_stats.is_empty() {
+        if existing_stats.is_empty() {
             info!(
-                "No sender email stats found in database. Please use --refresh flag to sync emails first"
+                "No {} email stats found in database. Please use --refresh flag to sync emails first",
+                S::HEADER.to_lowercase()
             );
             return Ok(());
         }
 
-        for sender_stat in senders_stats {
-            // We show only records from preferred senders if user has passed --sender flag
-            if !preferred_senders.is_empty() && !preferred_senders.contains(&sender_stat.sender) {
+        for stat in existing_stats {
+            // We show only records from preferred keys if user has passed the corresponding filter flag
+            if !preferred_keys.is_empty() && !preferred_keys.contains(&stat.key().to_string()) {
                 continue;
             }
-            rows.push(sender_stat);
+            rows.push(stat);
         }
     }
 
     // Sort the rows based on --sort-by flag, if provided. If --sort-by is absent but --top is
     // present, default to sorting by emails so "top N" has a well-defined meaning (highest
     // email counts first).
-    match sendersargs.sort_by {
-        Some(SenderSortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
-        Some(SenderSortBy::Sender) => rows.sort_by(|a, b| a.sender.cmp(&b.sender)),
+    match sort_by {
+        Some(SortField::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails())),
+        Some(SortField::Key) => rows.sort_by(|a, b| a.key().cmp(b.key())),
         None => {
-            if sendersargs.top.is_some() {
-                rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
+            if top.is_some() {
+                rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails()));
             }
         }
     }
 
     // Show only the top N rows (in whatever order was established above) if --top was passed.
-    if let Some(top) = sendersargs.top {
+    if let Some(top) = top {
         rows.truncate(top as usize);
     }
 
-    for sender_stat in rows {
-        table.add_row(vec![
-            sender_stat.sender,
-            sender_stat.total_emails.to_string(),
-            sender_stat.read_emails.to_string(),
-            sender_stat.unread_emails.to_string(),
-            sender_stat.attachment_count.to_string(),
-            sender_stat.no_attachment_count.to_string(),
-        ]);
+    // Prepare table for display
+    let mut table = Table::new();
+    table.set_header(vec![
+        S::HEADER,
+        "Emails",
+        "Read",
+        "Unread",
+        "Attachment",
+        "No Attachment",
+    ]);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_style(UTF8_FULL.with_rounded_corners());
+
+    for row in &rows {
+        table.add_row(row.to_table_row());
     }
 
     println!("{table}");
@@ -161,160 +347,32 @@ pub async fn get_sender_stats(
     Ok(())
 }
 
+pub async fn get_sender_stats(
+    sendersargs: SendersArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
+    get_stats::<SenderStats>(
+        sendersargs.provider,
+        sendersargs.refresh,
+        sendersargs.sender,
+        sendersargs.sort_by.map(SortField::from),
+        sendersargs.top,
+        db_manager,
+    )
+    .await
+}
+
 pub async fn get_receiver_stats(
     receiversargs: ReceiversArgs,
     db_manager: &DatabaseManager,
 ) -> anyhow::Result<()> {
-    // Prepare table for display
-    let mut table = Table::new();
-    table.set_header(vec![
-        "Receiver",
-        "Emails",
-        "Read",
-        "Unread",
-        "Attachment",
-        "No Attachment",
-    ]);
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.load_style(UTF8_FULL.with_rounded_corners());
-
-    let preferred_receivers = receiversargs.receiver;
-
-    let mut rows: Vec<ReceiverStats> = Vec::new();
-
-    let provider = if let Some(provider) = receiversargs.provider {
-        provider
-    } else {
-        db_manager
-            .get_default_provider_opt()
-            .await?
-            .unwrap_or_default()
-    };
-
-    if provider.is_empty() {
-        anyhow::bail!(
-            "No provider specified and no default provider set. Please pass --provider <NAME> or set a default provider using 'emailyzer providers default --name <NAME>'"
-        );
-    }
-
-    if !db_manager.provider_exists(provider.clone()).await? {
-        anyhow::bail!("Provider '{}' not found", provider);
-    }
-
-    info!("Using provider: {}", provider);
-
-    if receiversargs.refresh {
-        info!("User has passed --refresh flag. Reading emails from database");
-        let provider_data = db_manager.get_provider_data(provider.clone()).await?;
-        let emails: Vec<Email> = db_manager
-            .read_emails_from_database(&provider_data.sent_label.to_lowercase(), provider.clone())
-            .await?;
-        info!("Fetched {} emails from database", emails.len());
-
-        let mut receivers: HashMap<String, ReceiverStats> = HashMap::new();
-
-        // Count emails sent by each unique receiver
-        for email in emails {
-            let receiver_stat = receivers.entry(email.receiver.clone()).or_default();
-            receiver_stat.receiver = email.receiver;
-
-            receiver_stat.total_emails += 1;
-
-            if email.read_status {
-                receiver_stat.read_emails += 1;
-            } else {
-                receiver_stat.unread_emails += 1;
-            }
-
-            if email.attachment == 1 {
-                receiver_stat.attachment_count += 1;
-            } else {
-                receiver_stat.no_attachment_count += 1;
-            }
-        }
-
-        // Clear database table first to make fresh entries
-        db_manager
-            .delete_all_receiver_email_stats_entries(provider.clone())
-            .await?;
-
-        // Save the stats in database because user has used --refresh flag. Also, print records on stdout
-        for (receiver, stats) in receivers {
-            db_manager
-                .create_receiver_email_stats_entry(
-                    receiver.clone(),
-                    stats.total_emails,
-                    stats.read_emails,
-                    stats.unread_emails,
-                    stats.attachment_count,
-                    stats.no_attachment_count,
-                    provider.clone(),
-                )
-                .await?;
-
-            // We show only records from preferred senders if user has passed --sender flag
-            if !preferred_receivers.is_empty() && !preferred_receivers.contains(&receiver) {
-                continue;
-            }
-
-            rows.push(stats);
-        }
-    } else {
-        info!(
-            "User has skipped --refresh flag. Reading existing receiver email stats from database"
-        );
-        let receivers_stats = db_manager
-            .read_receiver_email_stats(provider.clone())
-            .await?;
-
-        if receivers_stats.is_empty() {
-            info!(
-                "No receiver email stats found in database. Please use --refresh flag to sync emails first"
-            );
-            return Ok(());
-        }
-
-        for receiver_stats in receivers_stats {
-            // We show only records from preferred senders if user has passed --sender flag
-            if !preferred_receivers.is_empty()
-                && !preferred_receivers.contains(&receiver_stats.receiver)
-            {
-                continue;
-            }
-            rows.push(receiver_stats);
-        }
-    }
-
-    // Sort the rows based on --sort-by flag, if provided. If --sort-by is absent but --top is
-    // present, default to sorting by emails so "top N" has a well-defined meaning (highest
-    // email counts first).
-    match receiversargs.sort_by {
-        Some(ReceiverSortBy::Emails) => rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails)),
-        Some(ReceiverSortBy::Receiver) => rows.sort_by(|a, b| a.receiver.cmp(&b.receiver)),
-        None => {
-            if receiversargs.top.is_some() {
-                rows.sort_by_key(|b| std::cmp::Reverse(b.total_emails));
-            }
-        }
-    }
-
-    // Show only the top N rows (in whatever order was established above) if --top was passed.
-    if let Some(top) = receiversargs.top {
-        rows.truncate(top as usize);
-    }
-
-    for receiver_stat in rows {
-        table.add_row(vec![
-            receiver_stat.receiver,
-            receiver_stat.total_emails.to_string(),
-            receiver_stat.read_emails.to_string(),
-            receiver_stat.unread_emails.to_string(),
-            receiver_stat.attachment_count.to_string(),
-            receiver_stat.no_attachment_count.to_string(),
-        ]);
-    }
-
-    println!("{table}");
-
-    Ok(())
+    get_stats::<ReceiverStats>(
+        receiversargs.provider,
+        receiversargs.refresh,
+        receiversargs.receiver,
+        receiversargs.sort_by.map(SortField::from),
+        receiversargs.top,
+        db_manager,
+    )
+    .await
 }

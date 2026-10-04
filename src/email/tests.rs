@@ -330,7 +330,10 @@ mod stats_tests {
             .await
             .unwrap();
 
-        let stats = db.read_sender_email_stats("gmail".to_string()).await.unwrap();
+        let stats = db
+            .read_sender_email_stats("gmail".to_string())
+            .await
+            .unwrap();
         assert_eq!(stats.len(), 2);
 
         let alice = stats
@@ -380,7 +383,10 @@ mod stats_tests {
             .await
             .unwrap();
 
-        let stats = db.read_sender_email_stats("gmail".to_string()).await.unwrap();
+        let stats = db
+            .read_sender_email_stats("gmail".to_string())
+            .await
+            .unwrap();
         assert_eq!(stats.len(), 2);
     }
 
