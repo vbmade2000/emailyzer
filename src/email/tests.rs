@@ -2,9 +2,9 @@
 mod email_tests {
     use imap_proto::{Address, Envelope};
 
-    use crate::email::email::{
-        format_address, get_client, get_datetime, get_receiver, get_sender, get_subject,
-        get_tls_connector,
+    use crate::email::imap_client::{get_client, get_tls_connector};
+    use crate::email::parsing::{
+        format_address, get_datetime, get_receiver, get_sender, get_subject,
     };
 
     fn make_envelope<'a>(
