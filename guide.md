@@ -385,7 +385,62 @@ except the filter flag is `--receiver` / `-e`.
 
 ---
 
-## 8. Running unit tests
+## 8. gRPC server
+
+`emailyzer` also exposes a gRPC server (see `src/grpc/grpc_server.rs`) that
+currently serves the `emailyzer.stats.Stats` service on `0.0.0.0:8080`, with
+server reflection enabled.
+
+### 8.1 Testing with grpcurl
+
+Because reflection is enabled, you don't need a copy of `proto/stats.proto`
+to explore or call the API — [`grpcurl`](https://grpcurl.org/) can discover
+everything at runtime. Install it from the [grpcurl releases page](https://github.com/fullstorydev/grpcurl#installation)
+or your package manager, then:
+
+```bash
+# List all exposed services
+grpcurl -plaintext 127.0.0.1:8080 list
+
+# Describe a service's methods and message types
+grpcurl -plaintext 127.0.0.1:8080 describe emailyzer.stats.Stats
+
+# Invoke a method (note the Service/Method path, separated by `/`)
+grpcurl -plaintext -d '{}' 127.0.0.1:8080 emailyzer.stats.Stats/GetSenderStats
+grpcurl -plaintext -d '{}' 127.0.0.1:8080 emailyzer.stats.Stats/GetReceiverStats
+```
+
+### 8.2 Pagination
+
+`GetSenderStats` and `GetReceiverStats` results are paginated. `SenderStatsRequest` /
+`ReceiverStatsRequest` take two
+optional fields:
+
+- `page_size` — max number of rows to return (defaults to 50 if omitted or 0).
+- `cursor` — opaque cursor from a previous response's `next_cursor`; omit it
+  (or pass an empty string) to fetch the first page.
+
+Each `SenderStatsResponse` / `ReceiverStatsResponse` includes a `next_cursor` field. If it's non-empty,
+pass it as `cursor` in the next request to fetch the following page; an empty
+`next_cursor` means there are no more results.
+
+```bash
+# First page (defaults to page_size 50)
+grpcurl -plaintext -d '{"page_size": 10}' \
+  127.0.0.1:8080 emailyzer.stats.Stats/GetSenderStats
+grpcurl -plaintext -d '{"page_size": 10}' \
+  127.0.0.1:8080 emailyzer.stats.Stats/GetReceiverStats
+
+# Subsequent page, using the next_cursor from the previous response
+grpcurl -plaintext -d '{"page_size": 10, "cursor": "sender@example.com"}' \
+  127.0.0.1:8080 emailyzer.stats.Stats/GetSenderStats
+grpcurl -plaintext -d '{"page_size": 10, "cursor": "receiver@example.com"}' \
+  127.0.0.1:8080 emailyzer.stats.Stats/GetReceiverStats
+```
+
+---
+
+## 9. Running unit tests
 
 Unit tests live next to the source code in `src/**/tests.rs` (database,
 providers, email parsing, password store). They use an in-memory SQLite
@@ -426,7 +481,7 @@ suite runs fully in memory.
 
 ---
 
-## 9. Further reading
+## 10. Further reading
 
 - IMAP protocol (RFC 3501): <https://datatracker.ietf.org/doc/html/rfc3501>,
   particularly [§7.4.2 on FETCH responses](https://datatracker.ietf.org/doc/html/rfc3501#section-7.4.2).

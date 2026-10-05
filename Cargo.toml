@@ -27,3 +27,10 @@ imap-proto = "0.10.2"
 inquire = "0.9.4"
 keyring = "4.2.0"
 keyring-core = "1.0.0"
+tonic = "0.14.6"
+prost = "0.14"
+tonic-prost = "0.14"
+tonic-reflection = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14.6"

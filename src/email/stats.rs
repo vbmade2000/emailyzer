@@ -403,7 +403,6 @@ pub async fn get_receiver_stats(
 
 /// Computes sender stats and returns them as raw rows (no table/printing), intended for use by
 /// the gRPC `get_sender_stats` handler.
-#[allow(dead_code)]
 pub async fn get_sender_stats_rows(
     sendersargs: SendersArgs,
     db_manager: &DatabaseManager,
@@ -414,6 +413,23 @@ pub async fn get_sender_stats_rows(
         sendersargs.sender,
         sendersargs.sort_by.map(SortField::from),
         sendersargs.top,
+        db_manager,
+    )
+    .await
+}
+
+/// Computes receiver stats and returns them as raw rows (no table/printing), intended for use by
+/// the gRPC `get_receiver_stats` handler.
+pub async fn get_receiver_stats_rows(
+    receiversargs: ReceiversArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<Vec<ReceiverStats>> {
+    compute_stats::<ReceiverStats>(
+        receiversargs.provider,
+        receiversargs.refresh,
+        receiversargs.receiver,
+        receiversargs.sort_by.map(SortField::from),
+        receiversargs.top,
         db_manager,
     )
     .await

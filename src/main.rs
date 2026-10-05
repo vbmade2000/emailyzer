@@ -10,11 +10,13 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use crate::{
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
     email::{get_provider_mailboxes, get_receiver_stats, get_sender_stats, sync_emails},
+    grpc::grpc_server::launch,
     providers::{add_provider, delete_provider, list_providers, set_default_provider},
 };
 
 mod database;
 mod email;
+mod grpc;
 mod password_store;
 mod providers;
 mod util;
@@ -51,6 +53,8 @@ enum Commands {
     Receivers(ReceiversArgs),
     /// Manage email providers
     Providers(ProvidersArgs),
+    /// Launch server
+    Serve,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
@@ -227,6 +231,9 @@ async fn main() -> anyhow::Result<()> {
                 get_provider_mailboxes(mailboxes_args).await?;
             }
         },
+        Commands::Serve => {
+            launch().await?;
+        }
     }
 
     Ok(())

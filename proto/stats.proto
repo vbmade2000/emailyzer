@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package emailyzer.stats;
+
+service Stats {
+    rpc GetSenderStats (SenderStatsRequest) returns (SenderStatsResponse) {};
+    rpc GetReceiverStats (ReceiverStatsRequest) returns (ReceiverStatsResponse) {};
+}
+
+message SenderStatsResponse {
+    repeated SenderStats sender_stats = 1;
+    // Opaque cursor to pass as `cursor` in the next request's `SenderStatsRequest` to fetch the
+    // next page. Empty when there are no more results.
+    string next_cursor = 2;
+}
+
+message SenderStats {
+    string sender = 1;
+    uint32 total_emails = 2;
+    uint32 read_emails = 3;
+    uint32 unread_emails = 4;
+    uint32 attachment_count = 5;
+    uint32 no_attachment_count = 6;
+}
+
+message SenderStatsRequest {
+    // Opaque cursor returned as `next_cursor` from a previous response. Omit (or pass an empty
+    // string) to fetch the first page.
+    string cursor = 1;
+    // Max number of rows to return. If 0, a server-side default is used.
+    uint32 page_size = 2;
+}
+
+message ReceiverStatsResponse {
+    repeated ReceiverStats receiver_stats = 1;
+    // Opaque cursor to pass as `cursor` in the next request's `ReceiverStatsRequest` to fetch the
+    // next page. Empty when there are no more results.
+    string next_cursor = 2;
+}
+
+message ReceiverStats {
+    string receiver = 1;
+    uint32 total_emails = 2;
+    uint32 read_emails = 3;
+    uint32 unread_emails = 4;
+    uint32 attachment_count = 5;
+    uint32 no_attachment_count = 6;
+}
+
+message ReceiverStatsRequest {
+    // Opaque cursor returned as `next_cursor` from a previous response. Omit (or pass an empty
+    // string) to fetch the first page.
+    string cursor = 1;
+    // Max number of rows to return. If 0, a server-side default is used.
+    uint32 page_size = 2;
+}
+    // bool refresh = 1;
+    // repeated string sender = 2;
+    // SortBy sort_by = 3;
+    // uint32 top = 4;
+    // string provider = 5;
+// }
