@@ -3,7 +3,7 @@ use tracing::{debug, info};
 
 use super::types::Provider;
 use crate::{
-    AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs,
+    cli::{AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs},
     database::DatabaseManager,
     password_store::{delete_password, store_password},
     util::read_secret,

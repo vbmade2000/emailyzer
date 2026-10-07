@@ -239,11 +239,11 @@ mod email_tests {
 
 #[cfg(test)]
 mod stats_tests {
+    use crate::cli::{SenderSortBy, SendersArgs};
     use crate::database::{DatabaseLocation, DatabaseManager};
     use crate::email::stats::get_sender_stats;
     use crate::email::types::Email;
     use crate::providers::Provider;
-    use crate::{SenderSortBy, SendersArgs};
 
     /// Fresh isolated database per test: each in-memory SQLite instance is private to its
     /// single-connection pool and disappears when the manager is dropped, so no locking or
@@ -501,11 +501,11 @@ mod stats_tests {
 
 #[cfg(test)]
 mod receiver_stats_tests {
+    use crate::cli::{ReceiverSortBy, ReceiversArgs};
     use crate::database::{DatabaseLocation, DatabaseManager};
     use crate::email::stats::get_receiver_stats;
     use crate::email::types::Email;
     use crate::providers::Provider;
-    use crate::{ReceiverSortBy, ReceiversArgs};
 
     /// Fresh isolated database per test: each in-memory SQLite instance is private to its
     /// single-connection pool and disappears when the manager is dropped, so no locking or
