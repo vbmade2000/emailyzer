@@ -2,13 +2,13 @@
 mod providers_tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use crate::cli::{AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs};
     use crate::database::{DatabaseLocation, DatabaseManager};
     use crate::password_store::get_password;
     use crate::password_store::tests::password_store_tests::{inject_error, setup_async};
     use crate::providers::providers::{
         add_provider, delete_provider, list_providers, set_default_provider,
     };
-    use crate::{AddProviderArgs, DefaultProviderArgs, DeleteProviderArgs};
 
     async fn test_db() -> DatabaseManager {
         DatabaseManager::new(DatabaseLocation::Memory)

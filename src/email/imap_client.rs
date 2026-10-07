@@ -8,7 +8,7 @@ use imap::{Client, Session};
 use native_tls::{TlsConnector, TlsStream};
 use tracing::info;
 
-use crate::{MailboxesArgs, util::read_secret};
+use crate::{cli::MailboxesArgs, util::read_secret};
 
 /// Create instance of TlsConnector to validate Gmail's TLS certificate
 pub(crate) async fn get_tls_connector() -> anyhow::Result<TlsConnector> {

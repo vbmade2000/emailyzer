@@ -4,7 +4,7 @@ use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use tracing::info;
 
 use crate::{
-    ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs,
+    cli::{ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs},
     database::DatabaseManager,
     email::types::{Email, ReceiverStats, SenderStats},
     providers::Provider,

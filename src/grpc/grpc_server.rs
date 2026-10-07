@@ -1,7 +1,7 @@
 use tonic;
 
 use crate::{
-    ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs,
+    cli::{ReceiverSortBy, ReceiversArgs, SenderSortBy, SendersArgs},
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
     email::stats::{get_receiver_stats_rows, get_sender_stats_rows},
     email::types::{ReceiverStats as ReceiverStatsEmail, SenderStats as SenderStatsEmail},

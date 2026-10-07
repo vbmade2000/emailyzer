@@ -9,7 +9,7 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
-    SyncArgs,
+    cli::SyncArgs,
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager, DatabaseOperations},
     email::{
         imap_client::{get_client, get_session, reconnect_session},
@@ -528,6 +528,8 @@ pub async fn sync_emails(syncargs: SyncArgs, db_manager: &DatabaseManager) -> an
     db_result??;
     inbox_fetch_result??;
     sent_emails_fetch_result??;
+
+    println!("Sync completed successfully \n");
 
     Ok(())
 }
