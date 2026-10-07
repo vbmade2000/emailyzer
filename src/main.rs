@@ -1,19 +1,12 @@
-use std::fs::File;
-use std::path::PathBuf;
-use std::sync::Mutex;
-
-use clap::Parser;
-use tracing::{info, level_filters::LevelFilter};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::BoxMakeWriter;
-
 use crate::{
     cli::{Cli, Commands, ProviderSubcommand},
     database::{DATABASE_URL, DatabaseLocation, DatabaseManager},
     email::{get_provider_mailboxes, get_receiver_stats, get_sender_stats, sync_emails},
     grpc::grpc_server::launch,
     providers::{add_provider, delete_provider, list_providers, set_default_provider},
+    util::set_tracing,
 };
+use clap::Parser;
 
 mod cli;
 mod database;
@@ -64,38 +57,5 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
-}
-
-fn set_tracing(log_file: Option<PathBuf>) -> anyhow::Result<()> {
-    /*
-        This helps in setting log level from RUST_LOG env var. eg: export RUST_LOG=debug. If not set,
-        it will default to INFO.
-    */
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    let writer = match log_file {
-        Some(path) => {
-            let file = File::create(path)?;
-            // Mutex is required to make sure that multiple threads don't write to the same file at once.
-            BoxMakeWriter::new(Mutex::new(file))
-        }
-        // If log file is not specified, write to stdout. Stdout handles locking internally so no need for Mutex.
-        None => BoxMakeWriter::new(std::io::stdout),
-    };
-
-    let subscriber = tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(false)
-        .with_target(true)
-        .with_env_filter(env_filter)
-        .with_writer(writer)
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)?;
-    info!("Tracing subscriber set successfully");
     Ok(())
 }
