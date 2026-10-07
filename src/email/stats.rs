@@ -218,16 +218,17 @@ impl StatRow for ReceiverStats {
 }
 
 /// Resolves/validates the provider to use, aggregates or reloads `S` stats (depending on
-/// `refresh`), sorts/truncates them, and prints them as a table. Shared implementation behind
-/// both `get_sender_stats` and `get_receiver_stats`.
-async fn get_stats<S: StatRow>(
+/// `refresh`), and sorts/truncates them. Does not print anything, so it can be reused by both
+/// the CLI (`get_stats`, which prints a table) and other consumers like a gRPC handler that need
+/// the raw rows instead.
+async fn compute_stats<S: StatRow>(
     provider_arg: Option<String>,
     refresh: bool,
     preferred_keys: Vec<String>,
     sort_by: Option<SortField>,
     top: Option<u8>,
     db_manager: &DatabaseManager,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<S>> {
     let provider = if let Some(provider) = provider_arg {
         provider
     } else {
@@ -295,7 +296,7 @@ async fn get_stats<S: StatRow>(
                 "No {} email stats found in database. Please use --refresh flag to sync emails first",
                 S::HEADER.to_lowercase()
             );
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         for stat in existing_stats {
@@ -325,6 +326,29 @@ async fn get_stats<S: StatRow>(
         rows.truncate(top as usize);
     }
 
+    Ok(rows)
+}
+
+/// Computes `S` stats (see `compute_stats`) and prints them as a table. Used by the CLI
+/// (`get_sender_stats`/`get_receiver_stats`).
+async fn show_stats<S: StatRow>(
+    provider_arg: Option<String>,
+    refresh: bool,
+    preferred_keys: Vec<String>,
+    sort_by: Option<SortField>,
+    top: Option<u8>,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<()> {
+    let rows = compute_stats::<S>(
+        provider_arg,
+        refresh,
+        preferred_keys,
+        sort_by,
+        top,
+        db_manager,
+    )
+    .await?;
+
     // Prepare table for display
     let mut table = Table::new();
     table.set_header(vec![
@@ -351,7 +375,7 @@ pub async fn get_sender_stats(
     sendersargs: SendersArgs,
     db_manager: &DatabaseManager,
 ) -> anyhow::Result<()> {
-    get_stats::<SenderStats>(
+    show_stats::<SenderStats>(
         sendersargs.provider,
         sendersargs.refresh,
         sendersargs.sender,
@@ -366,12 +390,30 @@ pub async fn get_receiver_stats(
     receiversargs: ReceiversArgs,
     db_manager: &DatabaseManager,
 ) -> anyhow::Result<()> {
-    get_stats::<ReceiverStats>(
+    show_stats::<ReceiverStats>(
         receiversargs.provider,
         receiversargs.refresh,
         receiversargs.receiver,
         receiversargs.sort_by.map(SortField::from),
         receiversargs.top,
+        db_manager,
+    )
+    .await
+}
+
+/// Computes sender stats and returns them as raw rows (no table/printing), intended for use by
+/// the gRPC `get_sender_stats` handler.
+#[allow(dead_code)]
+pub async fn get_sender_stats_rows(
+    sendersargs: SendersArgs,
+    db_manager: &DatabaseManager,
+) -> anyhow::Result<Vec<SenderStats>> {
+    compute_stats::<SenderStats>(
+        sendersargs.provider,
+        sendersargs.refresh,
+        sendersargs.sender,
+        sendersargs.sort_by.map(SortField::from),
+        sendersargs.top,
         db_manager,
     )
     .await
